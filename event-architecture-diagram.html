@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CUGA Event-Driven Architecture</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        
+        h1 {
+            text-align: center;
+            color: #2d3748;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #718096;
+            margin-bottom: 40px;
+            font-size: 1.1em;
+        }
+        
+        .architecture {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+        
+        .layer {
+            background: #f7fafc;
+            border-radius: 15px;
+            padding: 25px;
+            border: 2px solid #e2e8f0;
+            position: relative;
+        }
+        
+        .layer-title {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #2d3748;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+        }
+        
+        .components {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        
+        .component {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            border: 2px solid #cbd5e0;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            position: relative;
+        }
+        
+        .component:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
+            border-color: #667eea;
+        }
+        
+        .component-name {
+            font-weight: bold;
+            color: #2d3748;
+            margin-bottom: 8px;
+            font-size: 1.1em;
+        }
+        
+        .component-desc {
+            color: #718096;
+            font-size: 0.9em;
+            line-height: 1.5;
+        }
+        
+        .component-tech {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #e2e8f0;
+            font-size: 0.85em;
+            color: #667eea;
+            font-weight: 600;
+        }
+        
+        .flow-arrow {
+            text-align: center;
+            font-size: 2em;
+            color: #667eea;
+            margin: 10px 0;
+        }
+        
+        .source { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .source .component-name { color: white; }
+        .source .component-desc { color: #e2e8f0; }
+        .source .component-tech { color: #ffd700; border-top-color: rgba(255,255,255,0.3); }
+        
+        .ingestion { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; }
+        .ingestion .component-name { color: white; }
+        .ingestion .component-desc { color: #ffe8ec; }
+        .ingestion .component-tech { color: #ffd700; border-top-color: rgba(255,255,255,0.3); }
+        
+        .processing { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; }
+        .processing .component-name { color: white; }
+        .processing .component-desc { color: #e0f7ff; }
+        .processing .component-tech { color: #ffd700; border-top-color: rgba(255,255,255,0.3); }
+        
+        .core { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: white; }
+        .core .component-name { color: white; }
+        .core .component-desc { color: #e0fff8; }
+        .core .component-tech { color: #ffd700; border-top-color: rgba(255,255,255,0.3); }
+        
+        .delivery { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); color: white; }
+        .delivery .component-name { color: white; }
+        .delivery .component-desc { color: #fff8e0; }
+        .delivery .component-tech { color: #8b4513; border-top-color: rgba(255,255,255,0.3); }
+        
+        .legend {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 40px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .legend-color {
+            width: 30px;
+            height: 30px;
+            border-radius: 5px;
+            border: 2px solid #cbd5e0;
+        }
+        
+        .legend-label {
+            font-weight: 600;
+            color: #2d3748;
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 40px;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .stat-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+        
+        @media (max-width: 768px) {
+            .components {
+                grid-template-columns: 1fr;
+            }
+            
+            h1 {
+                font-size: 1.8em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 CUGA Event-Driven Architecture</h1>
+        <p class="subtitle">Comprehensive Event Processing System with Slack, GitHub & Cron Integration</p>
+        
+        <div class="architecture">
+            <!-- Event Sources Layer -->
+            <div class="layer">
+                <div class="layer-title">📥 Event Sources</div>
+                <div class="components">
+                    <div class="component source">
+                        <div class="component-name">GitHub Webhooks</div>
+                        <div class="component-desc">Pull requests, issues, comments, push events</div>
+                        <div class="component-tech">REST API • HMAC SHA-256</div>
+                    </div>
+                    <div class="component source">
+                        <div class="component-name">Slack Events API</div>
+                        <div class="component-desc">App mentions, messages, reactions</div>
+                        <div class="component-tech">Events API • Signature Verification</div>
+                    </div>
+                    <div class="component source">
+                        <div class="component-name">Cron Scheduler</div>
+                        <div class="component-desc">Periodic tasks, scheduled jobs</div>
+                        <div class="component-tech">APScheduler • Cron/Interval</div>
+                    </div>
+                    <div class="component source">
+                        <div class="component-name">Custom Webhooks</div>
+                        <div class="component-desc">CI/CD, monitoring, alerts</div>
+                        <div class="component-tech">Token Auth • Custom Payloads</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flow-arrow">↓</div>
+            
+            <!-- Event Ingestion Layer -->
+            <div class="layer">
+                <div class="layer-title">🔐 Event Ingestion Layer</div>
+                <div class="components">
+                    <div class="component ingestion">
+                        <div class="component-name">HTTP Server</div>
+                        <div class="component-desc">FastAPI endpoints for webhook ingestion</div>
+                        <div class="component-tech">FastAPI • Uvicorn • Port 8002</div>
+                    </div>
+                    <div class="component ingestion">
+                        <div class="component-name">Authentication</div>
+                        <div class="component-desc">Signature verification, token validation</div>
+                        <div class="component-tech">HMAC • JWT • Bearer Tokens</div>
+                    </div>
+                    <div class="component ingestion">
+                        <div class="component-name">Payload Validation</div>
+                        <div class="component-desc">Schema checking, data normalization</div>
+                        <div class="component-tech">Pydantic • JSON Schema</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flow-arrow">↓</div>
+            
+            <!-- Event Processing Pipeline -->
+            <div class="layer">
+                <div class="layer-title">⚙️ Event Processing Pipeline</div>
+                <div class="components">
+                    <div class="component processing">
+                        <div class="component-name">Event Router</div>
+                        <div class="component-desc">Pattern matching, priority routing</div>
+                        <div class="component-tech">Pattern Matching • Priority Queue</div>
+                    </div>
+                    <div class="component processing">
+                        <div class="component-name">Event Filter</div>
+                        <div class="component-desc">Policy checks, rate limiting</div>
+                        <div class="component-tech">Policy Engine • Rate Limiter</div>
+                    </div>
+                    <div class="component processing">
+                        <div class="component-name">Event Transformer</div>
+                        <div class="component-desc">Payload normalization, enrichment</div>
+                        <div class="component-tech">Data Transformation • Metadata</div>
+                    </div>
+                    <div class="component processing">
+                        <div class="component-name">Event Queue</div>
+                        <div class="component-desc">Async processing, backpressure handling</div>
+                        <div class="component-tech">Redis • In-Memory • Priority</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flow-arrow">↓</div>
+            
+            <!-- CUGA Core -->
+            <div class="layer">
+                <div class="layer-title">🤖 CUGA Core</div>
+                <div class="components">
+                    <div class="component core">
+                        <div class="component-name">LangGraph Agent</div>
+                        <div class="component-desc">Dynamic agent graph, state machine</div>
+                        <div class="component-tech">LangGraph • LangChain • LLM</div>
+                    </div>
+                    <div class="component core">
+                        <div class="component-name">Policy System</div>
+                        <div class="component-desc">Intent guards, playbooks, tool approval</div>
+                        <div class="component-tech">Policy Engine • Governance</div>
+                    </div>
+                    <div class="component core">
+                        <div class="component-name">Tool Registry</div>
+                        <div class="component-desc">MCP servers, OpenAPI, LangChain tools</div>
+                        <div class="component-tech">MCP • OpenAPI • Tool Calling</div>
+                    </div>
+                    <div class="component core">
+                        <div class="component-name">Session Manager</div>
+                        <div class="component-desc">Thread management, isolated sessions</div>
+                        <div class="component-tech">Thread IDs • Context Management</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flow-arrow">↓</div>
+            
+            <!-- Delivery Layer -->
+            <div class="layer">
+                <div class="layer-title">📤 Delivery Layer</div>
+                <div class="components">
+                    <div class="component delivery">
+                        <div class="component-name">Slack Delivery</div>
+                        <div class="component-desc">Post messages, thread replies</div>
+                        <div class="component-tech">Slack Web API • Bot Token</div>
+                    </div>
+                    <div class="component delivery">
+                        <div class="component-name">GitHub Comments</div>
+                        <div class="component-desc">PR reviews, issue comments</div>
+                        <div class="component-tech">GitHub API • OAuth</div>
+                    </div>
+                    <div class="component delivery">
+                        <div class="component-name">Webhook POST</div>
+                        <div class="component-desc">Custom webhook callbacks</div>
+                        <div class="component-tech">HTTP POST • JSON</div>
+                    </div>
+                    <div class="component delivery">
+                        <div class="component-name">Event Store</div>
+                        <div class="component-desc">Persistent event storage, audit log</div>
+                        <div class="component-tech">SQLite • PostgreSQL</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Legend -->
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-color" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);"></div>
+                <div class="legend-label">Event Sources</div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);"></div>
+                <div class="legend-label">Ingestion</div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);"></div>
+                <div class="legend-label">Processing</div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);"></div>
+                <div class="legend-label">Core</div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);"></div>
+                <div class="legend-label">Delivery</div>
+            </div>
+        </div>
+        
+        <!-- Stats -->
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value">5</div>
+                <div class="stat-label">Architecture Layers</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">19</div>
+                <div class="stat-label">Core Components</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">4</div>
+                <div class="stat-label">Event Sources</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">100+</div>
+                <div class="stat-label">Events/Second</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">99%</div>
+                <div class="stat-label">Reliability Target</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value"><2s</div>
+                <div class="stat-label">Processing Latency</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Add click handlers for components
+        document.querySelectorAll('.component').forEach(component => {
+            component.addEventListener('click', function() {
+                const name = this.querySelector('.component-name').textContent;
+                const desc = this.querySelector('.component-desc').textContent;
+                const tech = this.querySelector('.component-tech').textContent;
+                
+                alert(`${name}\n\n${desc}\n\nTechnology: ${tech}`);
+            });
+        });
+        
+        // Add hover effect for flow arrows
+        document.querySelectorAll('.flow-arrow').forEach(arrow => {
+            arrow.addEventListener('mouseenter', function() {
+                this.style.transform = 'scale(1.5)';
+                this.style.transition = 'transform 0.3s ease';
+            });
+            
+            arrow.addEventListener('mouseleave', function() {
+                this.style.transform = 'scale(1)';
+            });
+        });
+    </script>
+</body>
+</html>
