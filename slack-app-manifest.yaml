@@ -1,0 +1,73 @@
+display_information:
+  name: CUGA
+  description: Generalist AI Agent for Slack
+  background_color: "#1e3a8a"
+  long_description: "CUGA is an event-driven AI agent that can help with tasks, answer questions, and automate workflows in your Slack workspace."
+
+features:
+  app_home:
+    home_tab_enabled: true
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: CUGA
+    always_online: true
+  slash_commands:
+    - command: /cuga
+      description: "Interact with CUGA agent"
+      usage_hint: "[your request]"
+      should_escape: false
+    - command: /cuga-approve
+      description: "Approve a pending action"
+      usage_hint: "[approval_id]"
+      should_escape: false
+    - command: /cuga-reject
+      description: "Reject a pending action"
+      usage_hint: "[approval_id] [reason]"
+      should_escape: false
+    - command: /cuga-status
+      description: "Check CUGA status and pending approvals"
+      usage_hint: ""
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - channels:read
+      - chat:write
+      - chat:write.public
+      - commands
+      - files:read
+      - files:write
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - im:write
+      - links:read
+      - links:write
+      - reactions:read
+      - reactions:write
+      - users:read
+      - users:read.email
+
+settings:
+  event_subscriptions:
+    request_url: https://your-domain.com/webhooks/slack/events
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      - reaction_added
+      - reaction_removed
+  interactivity:
+    is_enabled: true
+    request_url: https://your-domain.com/webhooks/slack/interactions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
+
+# Made with Bob
