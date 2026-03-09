@@ -12,6 +12,8 @@ from .models import (
 from .client import SlackClient
 from .handler import SlackEventHandler
 from .notification_channel import SlackNotificationChannel
+from .processor import SlackEventProcessor
+from .routes import router, initialize_slack, get_slack_processor
 
 __all__ = [
     "SlackEventType",
@@ -24,6 +26,10 @@ __all__ = [
     "SlackClient",
     "SlackEventHandler",
     "SlackNotificationChannel",
+    "SlackEventProcessor",
+    "router",
+    "initialize_slack",
+    "get_slack_processor",
 ]
 
 # Made with Bob
