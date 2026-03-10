@@ -1,5 +1,6 @@
 """Slack-specific event processor"""
 
+import os
 from typing import Optional
 from loguru import logger
 
@@ -16,15 +17,38 @@ class SlackEventProcessor:
     - Interaction handling (buttons, modals)
     - Reaction handling
     - Error notifications
+    - Optional CUGA agent integration (controlled by CUGA_SLACK_ENABLE env var)
     """
     
-    def __init__(self, notification_channel: SlackNotificationChannel):
+    def __init__(
+        self,
+        notification_channel: SlackNotificationChannel,
+        cuga_enabled: Optional[bool] = None
+    ):
         """Initialize Slack event processor
         
         Args:
             notification_channel: Slack notification channel for sending responses
+            cuga_enabled: Enable CUGA agent integration (default: from CUGA_SLACK_ENABLE env var)
         """
         self.notification = notification_channel
+        self.cuga_enabled = (
+            cuga_enabled
+            if cuga_enabled is not None
+            else os.getenv("CUGA_SLACK_ENABLE", "false").lower() == "true"
+        )
+        self.cuga_agent = None
+        
+        if self.cuga_enabled:
+            try:
+                from cuga.sdk import CugaAgent
+                self.cuga_agent = CugaAgent()
+                logger.info("✅ CUGA Slack integration enabled - AI responses active")
+            except Exception as e:
+                logger.error(f"Failed to initialize CUGA agent: {e}")
+                self.cuga_enabled = False
+        else:
+            logger.info("ℹ️  CUGA Slack integration disabled (set CUGA_SLACK_ENABLE=true to enable)")
     
     async def process_event(self, event: Event, session_context: SessionContext):
         """Process a Slack event
@@ -109,11 +133,12 @@ class SlackEventProcessor:
             session_context: Session context
         """
         text = event.payload.get("text", "")
-        user = event.payload.get("user", {})
+        user = event.payload.get("user", "")
+        channel = event.payload.get("channel", "")
         response_channel = event.payload.get("response_channel")
         response_thread_ts = event.payload.get("response_thread_ts")
         
-        logger.info(f"Slack message from {user.get('name', 'unknown')}: {text[:50]}...")
+        logger.info(f"Slack message from {user}: {text[:50]}...")
         
         if not response_channel:
             logger.warning("No response channel in event payload")
@@ -126,18 +151,40 @@ class SlackEventProcessor:
                 message_ts=response_thread_ts
             )
         
-        # TODO: Call CUGA agent here
-        # from cuga.backend.cuga_graph.graph import DynamicAgentGraph
-        # agent = DynamicAgentGraph()
-        # response = await agent.process(text, session_context)
+        # Process with CUGA agent if enabled
+        if self.cuga_enabled and self.cuga_agent:
+            try:
+                logger.info(f"Invoking CUGA agent for message: {text[:50]}...")
+                
+                # Use thread_id from session context for conversation continuity
+                thread_id = session_context.thread_id or f"slack_{channel}_{user}"
+                
+                # Invoke CUGA agent
+                result = await self.cuga_agent.invoke(
+                    message=text,
+                    thread_id=thread_id,
+                    user_context=f"Slack user: {user}, Channel: {channel}"
+                )
+                
+                response_text = result.answer
+                logger.info(f"CUGA agent response: {response_text[:100]}...")
+                
+            except Exception as e:
+                logger.error(f"Error invoking CUGA agent: {e}", exc_info=True)
+                response_text = (
+                    f"❌ Sorry, I encountered an error processing your request:\n"
+                    f"```{str(e)}```\n\n"
+                    f"_Please try again or contact support if the issue persists._"
+                )
+        else:
+            # Fallback response when CUGA is disabled
+            response_text = (
+                f"Received your message: {text}\n\n"
+                f"_Note: CUGA integration is currently disabled. "
+                f"Set `CUGA_SLACK_ENABLE=true` in your environment to enable AI-powered responses._"
+            )
         
-        # For now, send a placeholder response
-        response_text = (
-            f"Received your message: {text}\n\n"
-            f"_Note: CUGA agent integration pending. "
-            f"This is a test response from the Slack event processor._"
-        )
-        
+        # Send response to Slack
         await self.notification.send_response(
             text=response_text,
             channel=response_channel,

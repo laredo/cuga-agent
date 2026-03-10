@@ -135,6 +135,11 @@ SLACK_APP_TOKEN=xapp-your-app-token-here
 SLACK_APP_ID=A0AKALDSV8S
 SLACK_APP_NAME=cuga
 SLACK_APP_DESCRIPTION=A Slack App to connect to CUGA
+
+# Optional: Enable CUGA integration for AI-powered responses (default: false)
+# When enabled, messages will be processed by the CUGA AI agent
+# When disabled, test responses will be sent
+CUGA_SLACK_ENABLE=false
 ```
 
 ### Phase 2: Set Up Webhook URLs (Requires Running CUGA)

@@ -769,6 +769,13 @@ async def lifespan(app: FastAPI):
     )
     await draft_app_state.agent.build_graph()
 
+    # Initialize external integrations (Slack, etc.)
+    try:
+        from cuga.backend.integrations import initialize_integrations
+        await initialize_integrations(app)
+    except Exception as e:
+        logger.warning(f"Failed to initialize integrations: {e}")
+
     logger.info("Application finished starting up...")
     url = f"http://localhost:{settings.server_ports.demo}/manage/cuga-default"
     if settings.advanced_features.mode == "api" and os.getenv("CUGA_TEST_ENV", "false").lower() not in (
