@@ -1,0 +1,76 @@
+---
+test_name: Thread context is maintained across messages (HTTP)
+
+marks:
+  - slack
+  - thread_context
+
+stages:
+  - name: Send first message to establish thread
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} my favorite animal is a penguin"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      save:
+        json:
+          thread_ts: sent.ts
+
+  - name: Ask follow-up question in same thread
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is my favorite animal?"
+        thread_ts: "{thread_ts}"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "(?i)penguin"
+
+---
+test_name: Thread does not bleed into new conversation (HTTP)
+
+marks:
+  - slack
+  - thread_context
+  - isolation
+
+stages:
+  - name: Send message in a thread with specific info
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} the secret code is XYZZY42"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+
+  - name: Ask about secret code in new conversation (no thread_ts)
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is the secret code?"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !anystr
+
+# Made with Bob

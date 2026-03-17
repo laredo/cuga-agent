@@ -1,0 +1,154 @@
+---
+test_name: Bot responds to mention (HTTP)
+
+marks:
+  - slack
+
+stages:
+  - name: Send message with bot mention and wait for response
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} hello, how are you?"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        sent:
+          ts: !anystr
+          channel: !anystr
+        response:
+          text: !anystr
+          user: !anystr
+          ts: !anystr
+      save:
+        json:
+          message_ts: sent.ts
+          response_text: response.text
+          thread_ts: response.ts
+
+---
+test_name: Bot responds in thread (HTTP)
+
+marks:
+  - slack
+
+stages:
+  - name: Send initial message
+    request:
+      url: http://localhost:5555/slack/send
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} start a conversation"
+    response:
+      status_code: 200
+      strict: false
+      json:
+        ts: !anystr
+      save:
+        json:
+          thread_ts: ts
+
+  - name: Wait for bot response
+    request:
+      url: http://localhost:5555/slack/wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        thread_ts: "{thread_ts}"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        text: !anystr
+        user: !anystr
+        thread_ts: "{thread_ts}"
+
+---
+test_name: Bot maintains conversation context (HTTP)
+
+marks:
+  - slack
+
+stages:
+  - name: Send first message
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} my name is Alice"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      save:
+        json:
+          thread_ts: sent.ts
+
+  - name: Send follow-up message in same thread
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is my name?"
+        thread_ts: "{thread_ts}"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "Alice"
+
+---
+test_name: Bot handles simple calculation (HTTP)
+
+marks:
+  - slack
+
+stages:
+  - name: Ask bot to calculate
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is 123 + 222?"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "345"
+
+---
+test_name: Bot responds to unknown command gracefully (HTTP)
+
+marks:
+  - slack
+
+stages:
+  - name: Send nonsense command
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} xyzabc123nonsense"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !anystr
+
+# Made with Bob

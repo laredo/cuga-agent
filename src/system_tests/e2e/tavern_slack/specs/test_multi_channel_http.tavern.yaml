@@ -1,0 +1,153 @@
+---
+test_name: Cross-Channel Isolation Test (HTTP)
+
+marks:
+  - slack
+  - multi_channel
+  - isolation
+
+stages:
+  - name: Send message to first channel
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: C0AKFDWC9JS
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} my favorite color is blue"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "(?i)(blue|color|favorite)"
+      save:
+        json:
+          channel1_ts: sent.ts
+
+  - name: Send message to second channel (should not remember)
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: C0AKGGHQ74M
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is my favorite color?"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          # Bot should not know the color from the other channel
+          text: !re_search "(?i)(don.t know|not sure|haven.t|didn.t|don.t have|no access|not aware|can.t find|no information)"
+
+---
+test_name: Multi-Channel Basic Response Test (HTTP)
+
+marks:
+  - slack
+  - multi_channel
+
+stages:
+  - name: Test bot responds in channel 1
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: C0AKFDWC9JS
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} hello from channel 1"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !anystr
+
+  - name: Test bot responds in channel 2
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: C0AKGGHQ74M
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} hello from channel 2"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !anystr
+
+---
+test_name: Channel-Specific Context Test (HTTP)
+
+marks:
+  - slack
+  - multi_channel
+  - context
+
+stages:
+  - name: Set context in channel 1
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: C0AKFDWC9JS
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} my name is Alice"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      save:
+        json:
+          channel1_thread: sent.ts
+
+  - name: Set different context in channel 2
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: C0AKGGHQ74M
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} my name is Bob"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      save:
+        json:
+          channel2_thread: sent.ts
+
+  - name: Verify channel 1 remembers Alice (in thread)
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: C0AKFDWC9JS
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is my name?"
+        thread_ts: "{channel1_thread}"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "(?i)alice"
+
+  - name: Verify channel 2 remembers Bob (in thread)
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: C0AKGGHQ74M
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is my name?"
+        thread_ts: "{channel2_thread}"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "(?i)bob"
+
+# Made with Bob

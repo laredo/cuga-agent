@@ -1,0 +1,17 @@
+# Tavern MCP Test Framework Requirements
+
+# Core testing framework
+tavern[pytest]>=2.9.0,<4.0.0
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# MCP client
+mcp>=0.1.0
+
+# Utilities
+loguru>=0.7.0
+python-box>=6.0.0,<7.0.0
+pyyaml>=6.0
+
+# Slack SDK (for type hints and fallbacks)
+slack-sdk>=3.23.0
