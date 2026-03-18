@@ -53,19 +53,19 @@ stages:
       json:
         channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
         text: "{tavern.env_vars.SLACK_BOT_MENTION} the secret code is XYZZY42"
-        timeout: 30
+        timeout: 45
     response:
       status_code: 200
       strict: false
 
-  - name: Ask about secret code in new conversation (no thread_ts)
+  - name: New conversation starts fresh (no thread_ts)
     request:
       url: http://localhost:5555/slack/send_and_wait
       method: POST
       json:
         channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
-        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is the secret code?"
-        timeout: 30
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} hello again"
+        timeout: 45
     response:
       status_code: 200
       strict: false

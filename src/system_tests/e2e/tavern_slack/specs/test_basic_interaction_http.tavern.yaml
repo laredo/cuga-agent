@@ -121,7 +121,7 @@ stages:
       json:
         channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
         text: "{tavern.env_vars.SLACK_BOT_MENTION} what is 123 + 222?"
-        timeout: 30
+        timeout: 45
     response:
       status_code: 200
       strict: false

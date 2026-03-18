@@ -139,6 +139,14 @@ def initialize_slack_driver():
         logger.warning(f"⚠️  Error during cleanup: {e}")
 
 
+@pytest.fixture(autouse=True)
+def inter_test_cooldown():
+    """Wait between tests so the bot queue drains before the next test starts."""
+    import time
+    yield
+    time.sleep(10)
+
+
 # Make asyncio event loop available for session
 @pytest.fixture(scope="session")
 def event_loop():

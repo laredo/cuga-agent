@@ -1,0 +1,337 @@
+---
+test_name: Bot handles rapid sequential messages (HTTP)
+
+marks:
+  - slack
+  - concurrency
+
+stages:
+  - name: Send first rapid message
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is 10 + 10?"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "20"
+
+  - name: Send second rapid message
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is 20 + 20?"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "40"
+
+  - name: Send third rapid message
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is 5 * 5?"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "25"
+
+---
+test_name: Bot responds correctly in multiple channels sequentially (HTTP)
+
+marks:
+  - slack
+  - concurrency
+  - multi_channel
+
+stages:
+  - name: Send to channel 1
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: C0AKFDWC9JS
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} say the word ALPHA"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "(?i)alpha"
+
+  - name: Send to channel 2
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: C0AKGGHQ74M
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} say the word BETA"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "(?i)beta"
+
+---
+test_name: Concurrent requests - responses are independent (HTTP)
+
+marks:
+  - slack
+  - concurrency
+  - http
+  - slow
+
+stages:
+  - name: Start thread 1 with a calculation
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is 111 + 222?"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "333"
+      save:
+        json:
+          thread_ts_1: sent.ts
+
+  - name: Start thread 2 with a different calculation
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what is 444 + 555?"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "999"
+      save:
+        json:
+          thread_ts_2: sent.ts
+
+  - name: Continue thread 1 independently
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} and what is 10 + 10?"
+        thread_ts: "{thread_ts_1}"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "20"
+
+  - name: Continue thread 2 independently
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} and what is 20 + 20?"
+        thread_ts: "{thread_ts_2}"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "40"
+
+---
+test_name: Thread isolation - separate conversations (HTTP)
+
+marks:
+  - slack
+  - concurrency
+  - http
+  - isolation
+  - slow
+
+stages:
+  - name: Start conversation A about animals
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} let's talk about dogs"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !anystr
+      save:
+        json:
+          conversation_a: sent.ts
+
+  - name: Start conversation B about food
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} let's talk about pizza"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !anystr
+      save:
+        json:
+          conversation_b: sent.ts
+
+  - name: Continue conversation A - should stay on dogs
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what are we talking about?"
+        thread_ts: "{conversation_a}"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "(?i)dog"
+
+  - name: Continue conversation B - should stay on pizza
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} what are we talking about?"
+        thread_ts: "{conversation_b}"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "(?i)pizza"
+
+---
+test_name: Response time under load (HTTP)
+
+marks:
+  - slack
+  - concurrency
+  - http
+  - performance
+  - slow
+
+stages:
+  - name: Send load test message 1
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} calculate 100 + 100"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "200"
+
+  - name: Send load test message 2
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} calculate 200 + 200"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "400"
+
+  - name: Send load test message 3
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} calculate 300 + 300"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "600"
+
+  - name: Send load test message 4
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} calculate 400 + 400"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "800"
+
+  - name: Send load test message 5
+    request:
+      url: http://localhost:5555/slack/send_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "{tavern.env_vars.SLACK_BOT_MENTION} calculate 500 + 500"
+        timeout: 45
+    response:
+      status_code: 200
+      strict: false
+      json:
+        response:
+          text: !re_search "1000"
+
+# Made with Bob
+# Made with Bob
