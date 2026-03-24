@@ -1,13 +1,17 @@
 spec_version: v1
-kind: native
-style: custom
+kind: agent
 name: cuga_agent
 title: CUGA Agent
 nickname: cuga_agent
 description: |
   CUGA generalist enterprise agent supporting complex task execution
   on web and APIs, with OpenAPI/MCP integrations and policy-aware behaviour.
-entrypoint: cuga_wxo_entrypoint:create_agent
+deployment:
+  language: python
+  framework: langgraph
+  code_bundle:
+    path: cuga_wxo_entrypoint.py
+    entrypoint: cuga_wxo_entrypoint:create_agent
 llm: watsonx/ibm/granite-3-8b-instruct
 tags:
   - cuga
