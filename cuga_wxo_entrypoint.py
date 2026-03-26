@@ -1,8 +1,20 @@
 """
 WxO entry point for CUGA — Option 1: Native LangGraph Import.
 
-WxO calls create_agent(config) at startup, then compiles the returned
-StateGraph and manages checkpointing and LLM routing via its AI Gateway.
+WxO calls create_agent(config) to get the StateGraph, then compiles it
+and manages checkpointing. CUGA's runtime credentials (LLM API key,
+model TOML config, etc.) are supplied via a WxO key_value connection
+named 'cuga_credentials', which the entrypoint injects as env vars so
+CUGA's internal settings loader finds them normally.
+
+Setup (one-time, per environment):
+    orchestrate connections add -a cuga_credentials
+    orchestrate connections configure -a cuga_credentials \
+        --env draft --kind key_value --type team
+    orchestrate connections set-credentials -a cuga_credentials \
+        --env draft \
+        -e OPENAI_API_KEY=sk-... \
+        -e AGENT_SETTING_CONFIG=settings.openai.toml
 
 State persistence note
 ----------------------
@@ -20,27 +32,43 @@ deliberately avoid that property here so WxO can attach its own
 checkpointer at compile time.
 """
 
-from langchain_core.runnables.config import RunnableConfig
-from langgraph.graph import StateGraph
+import os
 
-from cuga.sdk import CugaAgent
+from langchain_core.runnables import RunnableConfig
+from langgraph.graph import StateGraph
+from loguru import logger
+
+APP_ID = "cuga_credentials"
 
 
 def create_agent(config: RunnableConfig) -> StateGraph:
     """
     WxO-compatible factory function.
 
-    Returns an UNCOMPILED StateGraph. WxO compiles it and manages
-    checkpointing and the LLM via its AI Gateway.
+    Loads CUGA credentials from the WxO key_value connection into env vars,
+    then builds and returns an UNCOMPILED StateGraph for WxO to compile.
 
     Args:
         config: RunnableConfig supplied by WxO at agent startup.
-                Currently unused — LLM injection happens at the
-                AI Gateway (network) level, not via RunnableConfig.
 
     Returns:
         Uncompiled LangGraph StateGraph ready for WxO to compile.
     """
+    # Inject WxO connection credentials as env vars so CUGA's settings
+    # loader (dynaconf / TOML) finds them the same way it does locally.
+    try:
+        from ibm_watsonx_orchestrate.run import connections
+        creds = connections.key_value(APP_ID)
+        for key, value in creds.items():
+            os.environ.setdefault(key, value)
+        logger.info(f"Loaded {len(creds)} credential(s) from WxO connection '{APP_ID}'")
+    except Exception as e:
+        logger.warning(
+            f"Could not load WxO connection '{APP_ID}': {e} — "
+            "assuming env vars are already set (local dev mode)"
+        )
+
+    from cuga.sdk import CugaAgent
     agent = CugaAgent()
     # _create_graph() returns the uncompiled HITL wrapper StateGraph.
     # Do NOT call agent.graph (property) — that compiles with MemorySaver,
