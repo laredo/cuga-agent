@@ -2,38 +2,26 @@
 WxO entry point for CUGA — Option 1: Native LangGraph Import.
 
 WxO calls create_agent(config) to get the StateGraph, then compiles it
-and manages checkpointing. CUGA's runtime credentials (LLM API key,
-model TOML config, etc.) are supplied via a WxO key_value connection
-named 'cuga_credentials', which the entrypoint injects as env vars so
-CUGA's internal settings loader finds them normally.
+and manages checkpointing. Credentials (OPENAI_API_KEY, AGENT_SETTING_CONFIG)
+are injected by WxO via config["configurable"]["credentials"] after the
+cuga_credentials connection is linked to the agent with:
 
-Setup (one-time, per environment):
-    orchestrate connections add -a cuga_credentials
-    orchestrate connections configure -a cuga_credentials \
-        --env draft --kind key_value --type team
-    orchestrate connections set-credentials -a cuga_credentials \
-        --env draft \
-        -e OPENAI_API_KEY=sk-... \
-        -e AGENT_SETTING_CONFIG=settings.openai.toml
+    orchestrate agents experimental-connect -n cuga_agent -c cuga_credentials
+
+The credential keys follow the WxO format: {app_id}_{field_name_lowercase}
+e.g. cuga_credentials_openai_api_key, cuga_credentials_agent_setting_config
 
 State schema
 ------------
-WxO preserves only the `messages` field across turns.  CUGA's AgentState
+WxO preserves only the `messages` field across turns. CUGA's AgentState
 requires `input` (str) and `url` (str) as mandatory fields — WxO never
-provides them.  This entrypoint wraps CUGA's graph in a thin WxO-
-compatible StateGraph whose state is just `messages`, then translates
-into/out of AgentState in the single wrapper node.
+provides them. This entrypoint wraps CUGA's graph in a thin WxO-compatible
+StateGraph whose state is just `messages`, then translates into/out of
+AgentState in the single wrapper node.
 
 The wrapper compiles CUGA's HITL graph WITHOUT a checkpointer so that
-WxO can attach its own at the outer level.  Full message history is
-forwarded as `chat_messages` each turn so CUGA has conversation context.
-
-Checkpointer note
------------------
-CugaAgent._create_graph() returns the UNCOMPILED StateGraph wrapper.
-The compiled graph (with MemorySaver) lives on CugaAgent.graph — we
-deliberately avoid that property here so WxO can attach its own
-checkpointer at compile time.
+WxO can attach its own at the outer level. Full message history is forwarded
+as `chat_messages` each turn so CUGA has conversation context.
 """
 
 import json
@@ -52,7 +40,6 @@ APP_ID = "cuga_credentials"
 
 class WxOState(TypedDict):
     """Minimal WxO-compatible state — only `messages` is preserved between turns."""
-
     messages: Annotated[List[BaseMessage], add_messages]
 
 
@@ -60,32 +47,42 @@ def create_agent(config: RunnableConfig) -> StateGraph:
     """
     WxO-compatible factory function.
 
-    Loads CUGA credentials from the WxO key_value connection into env vars,
-    wraps CUGA's HITL graph in a WxO-compatible StateGraph, and returns it
-    UNCOMPILED so WxO can attach its own checkpointer.
+    Reads credentials from config["configurable"]["credentials"], sets them
+    as env vars for CUGA's settings loader, wraps CUGA's HITL graph in a
+    WxO-compatible StateGraph, and returns it UNCOMPILED.
 
     Args:
-        config: RunnableConfig supplied by WxO at agent startup.
+        config: RunnableConfig supplied by WxO at agent startup — contains
+                credentials under config["configurable"]["credentials"].
 
     Returns:
         Uncompiled LangGraph StateGraph ready for WxO to compile.
     """
     # ------------------------------------------------------------------
-    # 1. Inject WxO connection credentials as env vars so CUGA's settings
-    #    loader (dynaconf / TOML) finds them the same way it does locally.
+    # 1. Extract credentials from WxO config and inject as env vars so
+    #    CUGA's dynaconf/TOML settings loader finds them normally.
+    #    Key format: {app_id}_{field_name_lowercase}
     # ------------------------------------------------------------------
-    try:
-        from ibm_watsonx_orchestrate.run import connections
+    credentials = (config or {}).get("configurable", {}).get("credentials", {})
 
-        creds = connections.key_value(APP_ID)
-        for key, value in creds.items():
-            os.environ.setdefault(key, value)
-        logger.info(f"Loaded {len(creds)} credential(s) from WxO connection '{APP_ID}'")
-    except Exception as e:
-        logger.warning(
-            f"Could not load WxO connection '{APP_ID}': {e} — "
-            "assuming env vars are already set (local dev mode)"
-        )
+    openai_api_key = (
+        credentials.get(f"{APP_ID}_openai_api_key")
+        or credentials.get(f"{APP_ID}_OPENAI_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+    )
+    agent_setting_config = (
+        credentials.get(f"{APP_ID}_agent_setting_config")
+        or credentials.get(f"{APP_ID}_AGENT_SETTING_CONFIG")
+        or os.environ.get("AGENT_SETTING_CONFIG", "settings.openai.toml")
+    )
+
+    if openai_api_key:
+        os.environ["OPENAI_API_KEY"] = openai_api_key
+        logger.info("OPENAI_API_KEY loaded from WxO credentials")
+    else:
+        logger.warning("OPENAI_API_KEY not found in WxO credentials")
+
+    os.environ.setdefault("AGENT_SETTING_CONFIG", agent_setting_config)
 
     # ------------------------------------------------------------------
     # 2. Build CUGA agent and compile its inner HITL graph WITHOUT a
@@ -104,14 +101,11 @@ def create_agent(config: RunnableConfig) -> StateGraph:
     async def cuga_node(state: WxOState, node_config: RunnableConfig):
         messages: List[BaseMessage] = state["messages"]
 
-        # Extract the latest human message as the `input` field CUGA requires.
         last_human = next(
             (m for m in reversed(messages) if isinstance(m, HumanMessage)), None
         )
         input_text = last_human.content if last_human else ""
 
-        # Build a valid AgentState: required fields get safe defaults;
-        # full message history is forwarded as chat_messages for context.
         cuga_input = AgentState(
             input=input_text,
             url="",
@@ -119,19 +113,14 @@ def create_agent(config: RunnableConfig) -> StateGraph:
             messages=[],
         ).model_dump()
 
-        # Invoke CUGA (single turn — full state passed explicitly each turn).
         result = await compiled_cuga.ainvoke(cuga_input)
 
-        # ------------------------------------------------------------------
-        # 4. Extract CUGA's response and convert to a WxO AIMessage.
-        # ------------------------------------------------------------------
-        # Priority 1: structured final_answer field (set by FinalAnswerNode).
+        # Priority 1: final_answer field (set by FinalAnswerNode)
         final_answer = result.get("final_answer", "")
         if final_answer:
             return {"messages": [AIMessage(content=str(final_answer))]}
 
-        # Priority 2: last AIMessage in result["messages"] — may be JSON from
-        # FinalAnswerNode: {"thoughts": [...], "final_answer": "...", ...}
+        # Priority 2: last AIMessage in result["messages"] — may be JSON
         result_messages: List[BaseMessage] = result.get("messages") or []
         for m in reversed(result_messages):
             if isinstance(m, AIMessage) and m.content:
@@ -143,7 +132,7 @@ def create_agent(config: RunnableConfig) -> StateGraph:
                     pass
                 return {"messages": [AIMessage(content=m.content)]}
 
-        # Priority 3: last AIMessage in chat_messages.
+        # Priority 3: last AIMessage in chat_messages
         result_chat: List[BaseMessage] = result.get("chat_messages") or []
         for m in reversed(result_chat):
             if isinstance(m, AIMessage) and m.content:
@@ -152,7 +141,7 @@ def create_agent(config: RunnableConfig) -> StateGraph:
         return {"messages": [AIMessage(content="I encountered an issue processing your request.")]}
 
     # ------------------------------------------------------------------
-    # 5. Build and return the wrapper graph (UNCOMPILED — WxO compiles it).
+    # 4. Build and return the wrapper graph (UNCOMPILED — WxO compiles it).
     # ------------------------------------------------------------------
     workflow = StateGraph(WxOState)
     workflow.add_node("cuga", cuga_node)
