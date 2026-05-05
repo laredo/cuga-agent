@@ -5,14 +5,21 @@ Provides fixtures and configuration for Slack integration tests.
 """
 
 import os
+import sys
 import pytest
 import asyncio
 from pathlib import Path
 from loguru import logger
 from dotenv import load_dotenv
 
+# Make the tavern_slack directory importable as a plain 'utils.*' namespace,
+# which is what Tavern's verify_response_with uses when resolving ext functions.
+_here = Path(__file__).parent
+if str(_here) not in sys.path:
+    sys.path.insert(0, str(_here))
+
 # Load environment variables from .env file
-env_file = Path(__file__).parent / ".env"
+env_file = _here / ".env"
 if env_file.exists():
     load_dotenv(env_file)
     logger.info(f"✅ Loaded environment from {env_file}")

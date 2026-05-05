@@ -1,0 +1,137 @@
+---
+test_name: Thumbs-up reaction triggers approved acknowledgment (HTTP)
+
+marks:
+  - slack
+  - reactions
+
+stages:
+  - name: Post a message so we have something to react to
+    request:
+      url: http://localhost:5555/slack/send
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "Reaction test message — please approve with 👍"
+    response:
+      status_code: 200
+      strict: false
+      json:
+        ts: !anystr
+        channel: !anystr
+      save:
+        json:
+          approved_msg_ts: ts
+
+  - name: React with thumbs-up and wait for bot approved response
+    request:
+      url: http://localhost:5555/slack/react_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        message_ts: "{approved_msg_ts}"
+        reaction: "+1"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        reaction:
+          reaction: "+1"
+        response:
+          text: !anystr
+          user: !anystr
+          ts: !anystr
+      verify_response_with:
+        - function: utils.tavern_helpers:response_contains
+          extra_kwargs:
+            field: response.text
+            substring: approved
+
+---
+test_name: Thumbs-down reaction triggers rejected acknowledgment (HTTP)
+
+marks:
+  - slack
+  - reactions
+
+stages:
+  - name: Post a message to reject
+    request:
+      url: http://localhost:5555/slack/send
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "Reaction test message — please reject with 👎"
+    response:
+      status_code: 200
+      strict: false
+      json:
+        ts: !anystr
+      save:
+        json:
+          rejected_msg_ts: ts
+
+  - name: React with thumbs-down and wait for bot rejected response
+    request:
+      url: http://localhost:5555/slack/react_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        message_ts: "{rejected_msg_ts}"
+        reaction: "-1"
+        timeout: 30
+    response:
+      status_code: 200
+      strict: false
+      json:
+        reaction:
+          reaction: "-1"
+        response:
+          text: !anystr
+          user: !anystr
+          ts: !anystr
+      verify_response_with:
+        - function: utils.tavern_helpers:response_contains
+          extra_kwargs:
+            field: response.text
+            substring: rejected
+
+---
+test_name: Unrecognized reaction produces no bot response (HTTP)
+
+marks:
+  - slack
+  - reactions
+
+stages:
+  - name: Post a message to react to with an unknown emoji
+    request:
+      url: http://localhost:5555/slack/send
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        text: "Reaction test message — react with eyes emoji (should be ignored)"
+    response:
+      status_code: 200
+      strict: false
+      json:
+        ts: !anystr
+      save:
+        json:
+          noop_msg_ts: ts
+
+  - name: React with eyes and expect timeout (no bot response)
+    request:
+      url: http://localhost:5555/slack/react_and_wait
+      method: POST
+      json:
+        channel: "{tavern.env_vars.SLACK_TEST_CHANNEL}"
+        message_ts: "{noop_msg_ts}"
+        reaction: "eyes"
+        timeout: 10
+    response:
+      status_code: 408
+      strict: false
+      json:
+        error: !anystr

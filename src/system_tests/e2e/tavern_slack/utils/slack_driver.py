@@ -23,7 +23,8 @@ class SlackDriver:
         Initialize Slack driver.
 
         Args:
-            bot_token: Slack bot token for test driver (xoxb-)
+            bot_token: Slack bot token for test driver (xoxb-); must have
+                       reactions:write in addition to the standard chat/history scopes
             target_bot_user_id: User ID of the bot to mention (e.g., CUGA bot)
                                If not provided, will use test driver's own ID
         """
@@ -279,6 +280,72 @@ class SlackDriver:
         )
 
         return sent, response
+
+    def add_reaction(
+        self,
+        channel: str,
+        timestamp: str,
+        reaction: str,
+    ) -> Dict[str, Any]:
+        """
+        Add an emoji reaction to a Slack message.
+
+        Args:
+            channel: Channel ID containing the message
+            timestamp: Message timestamp (ts)
+            reaction: Emoji name without colons (e.g. "+1", "thumbsup")
+
+        Returns:
+            Dict with channel, timestamp, and reaction fields
+        """
+        logger.info(f"👍 Adding :{reaction}: reaction to message {timestamp} in {channel}")
+        try:
+            self.client.reactions_add(
+                channel=channel,
+                timestamp=timestamp,
+                name=reaction,
+            )
+            logger.info(f"✅ Reaction :{reaction}: added")
+            return {"channel": channel, "timestamp": timestamp, "reaction": reaction}
+        except SlackApiError as e:
+            # already_reacted is safe to ignore — idempotent in tests
+            if "already_reacted" in str(e):
+                logger.warning(f"⚠️  Already reacted with :{reaction}: — ignoring")
+                return {"channel": channel, "timestamp": timestamp, "reaction": reaction}
+            logger.error(f"❌ Failed to add reaction: {e}")
+            raise
+
+    def react_and_wait(
+        self,
+        channel: str,
+        message_ts: str,
+        reaction: str,
+        timeout: int = 30,
+    ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+        """
+        Add a reaction to a message and wait for the bot to respond in that thread.
+
+        The bot's reaction handler replies in the thread of the reacted-to message,
+        so we poll that thread for a new bot message appearing after the reaction.
+
+        Args:
+            channel: Channel ID
+            message_ts: Timestamp of the message to react to
+            reaction: Emoji name without colons (e.g. "+1", "-1")
+            timeout: Max seconds to wait for bot response
+
+        Returns:
+            Tuple of (reaction_info, bot_response)
+        """
+        reaction_info = self.add_reaction(channel, message_ts, reaction)
+        after_ts = str(time.time())
+        response = self.wait_for_response(
+            channel=channel,
+            after_ts=after_ts,
+            thread_ts=message_ts,
+            timeout=timeout,
+        )
+        return reaction_info, response
 
 
 # Singleton instance for reuse across tests

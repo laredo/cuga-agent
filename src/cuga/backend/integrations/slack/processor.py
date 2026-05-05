@@ -193,22 +193,43 @@ class SlackEventProcessor:
         
         logger.info(f"Sent response to Slack channel {response_channel}")
     
+    _APPROVE_REACTIONS = frozenset({"+1", "thumbsup", "white_check_mark"})
+    _REJECT_REACTIONS = frozenset({"-1", "thumbsdown", "x"})
+
     async def _handle_reaction(self, event: Event, session_context: SessionContext):
         """Handle Slack reaction
-        
-        Args:
-            event: Reaction event
-            session_context: Session context
+
+        Only acts on reaction_added events. Maps known emojis to approval or
+        rejection acknowledgments threaded on the original message.
         """
+        if event.event_name != "reaction_added":
+            return
+
         reaction = event.payload.get("reaction")
-        logger.info(f"Slack reaction: {reaction}")
-        
-        # TODO: Implement reaction handling
-        # Could be used for:
-        # - Feedback collection
-        # - Bookmarking messages
-        # - Quick actions (👍 = approve, 👎 = reject)
-        # - etc.
+        item = event.payload.get("item") or {}
+        channel = item.get("channel")
+        thread_ts = item.get("ts")
+
+        if not reaction or not channel:
+            logger.warning(f"Reaction event missing required fields: reaction={reaction}, channel={channel}")
+            return
+
+        if reaction in self._APPROVE_REACTIONS:
+            logger.info(f"Approval reaction '{reaction}' from {event.payload.get('user')} in {channel}")
+            await self.notification.send_response(
+                text="approved",
+                channel=channel,
+                thread_ts=thread_ts,
+            )
+        elif reaction in self._REJECT_REACTIONS:
+            logger.info(f"Rejection reaction '{reaction}' from {event.payload.get('user')} in {channel}")
+            await self.notification.send_response(
+                text="rejected",
+                channel=channel,
+                thread_ts=thread_ts,
+            )
+        else:
+            logger.info(f"Unrecognized reaction '{reaction}' — no action taken")
     
     async def _send_error(self, event: Event, error_message: str):
         """Send error message to Slack

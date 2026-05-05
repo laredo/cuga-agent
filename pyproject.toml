@@ -220,4 +220,6 @@ anyio_mode = "auto"
 asyncio_mode = "auto"
 markers = [
     "e2e: end-to-end tests requiring live external services (registry, etc.)",
+    "slack: Slack integration tests requiring a live Slack workspace",
+    "reactions: Slack reaction-handling e2e tests (requires reactions:write scope)",
 ]

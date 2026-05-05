@@ -151,6 +151,64 @@ class SocketModeHandler:
             await self.event_queue.enqueue(cuga_event)
             logger.info(f"✅ Event queued: direct_message from {user}")
         
+        @app.event("reaction_added")
+        async def handle_reaction_added(event):
+            """Handle emoji reaction added to a message"""
+            reaction = event.get("reaction")
+            user = event.get("user")
+            item = event.get("item", {})
+            channel = item.get("channel")
+
+            logger.info(f"👍 Reaction :{reaction}: added by {user} in {channel}")
+
+            cuga_event = Event(
+                type=EventType.SLACK,
+                source=EventSource.WEBHOOK,
+                event_name="reaction_added",
+                payload={
+                    "reaction": reaction,
+                    "user": user,
+                    "item": item,
+                    "item_user": event.get("item_user"),
+                },
+                metadata={
+                    "session_target": "isolated",
+                    "thread_id": f"slack_reaction_{channel}_{event.get('event_ts', '')}",
+                },
+            )
+
+            await self.event_queue.enqueue(cuga_event)
+            logger.info(f"✅ Event queued: reaction_added :{reaction}: from {user}")
+
+        @app.event("reaction_removed")
+        async def handle_reaction_removed(event):
+            """Handle emoji reaction removed from a message"""
+            reaction = event.get("reaction")
+            user = event.get("user")
+            item = event.get("item", {})
+            channel = item.get("channel")
+
+            logger.info(f"👎 Reaction :{reaction}: removed by {user} in {channel}")
+
+            cuga_event = Event(
+                type=EventType.SLACK,
+                source=EventSource.WEBHOOK,
+                event_name="reaction_removed",
+                payload={
+                    "reaction": reaction,
+                    "user": user,
+                    "item": item,
+                    "item_user": event.get("item_user"),
+                },
+                metadata={
+                    "session_target": "isolated",
+                    "thread_id": f"slack_reaction_{channel}_{event.get('event_ts', '')}",
+                },
+            )
+
+            await self.event_queue.enqueue(cuga_event)
+            logger.info(f"✅ Event queued: reaction_removed :{reaction}: from {user}")
+
         @app.command("/cuga")
         async def handle_cuga_command(ack, command, respond):
             """Handle /cuga slash command"""

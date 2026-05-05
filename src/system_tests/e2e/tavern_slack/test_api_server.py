@@ -214,6 +214,92 @@ def slack_get_thread():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/slack/react', methods=['POST'])
+def slack_react():
+    """
+    Add a reaction to a Slack message.
+
+    Request body:
+        {
+            "channel": "C0AKFDWC9JS",
+            "timestamp": "1234567890.123456",
+            "reaction": "+1"
+        }
+
+    Response:
+        {
+            "channel": "C0AKFDWC9JS",
+            "timestamp": "1234567890.123456",
+            "reaction": "+1"
+        }
+    """
+    try:
+        data = request.json
+        channel = data.get('channel')
+        timestamp = data.get('timestamp')
+        reaction = data.get('reaction')
+
+        if not channel or not timestamp or not reaction:
+            return jsonify({"error": "channel, timestamp, and reaction are required"}), 400
+
+        result = driver.add_reaction(channel, timestamp, reaction)
+        return jsonify(result), 200
+
+    except Exception as e:
+        logger.error(f"Error in /slack/react: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/slack/react_and_wait', methods=['POST'])
+def slack_react_and_wait():
+    """
+    Add a reaction to a message and wait for the bot to respond in that thread.
+
+    Request body:
+        {
+            "channel": "C0AKFDWC9JS",
+            "message_ts": "1234567890.123456",
+            "reaction": "+1",
+            "timeout": 30
+        }
+
+    Response:
+        {
+            "reaction": {"channel": "...", "timestamp": "...", "reaction": "+1"},
+            "response": {"text": "approved", "user": "...", "ts": "...", "thread_ts": "..."}
+        }
+    """
+    try:
+        data = request.json
+        channel = data.get('channel')
+        message_ts = data.get('message_ts')
+        reaction = data.get('reaction')
+        timeout = data.get('timeout', 30)
+
+        if not channel or not message_ts or not reaction:
+            return jsonify({"error": "channel, message_ts, and reaction are required"}), 400
+
+        reaction_info, response = driver.react_and_wait(
+            channel=channel,
+            message_ts=message_ts,
+            reaction=reaction,
+            timeout=timeout,
+        )
+
+        if response is None:
+            return jsonify({
+                "reaction": reaction_info,
+                "response": None,
+                "error": "Timeout waiting for bot response",
+            }), 408
+
+        return jsonify({"reaction": reaction_info, "response": response}), 200
+
+    except Exception as e:
+        logger.error(f"Error in /slack/react_and_wait: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == '__main__':
     logger.info("🚀 Starting Test API Server on http://localhost:5555")
     logger.info("📝 Endpoints:")
@@ -222,6 +308,8 @@ if __name__ == '__main__':
     logger.info("  POST /slack/wait")
     logger.info("  POST /slack/send_and_wait")
     logger.info("  POST /slack/get_thread")
+    logger.info("  POST /slack/react")
+    logger.info("  POST /slack/react_and_wait")
 
     app.run(host='0.0.0.0', port=5555, debug=False)
 
