@@ -29,34 +29,38 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 
 ---
 
-> **🎉 NEW: CUGA Enterprise SDK with Policy System** — Build production-ready AI agents with enterprise-grade governance. Programmatically configure safety guards, workflow controls, and compliance policies via Python SDK or visual UI. Ensure consistent, secure, and compliant agent behavior across your organization.
+> **Why CUGA?** — A generalist agent harness for the enterprise: wire your APIs and MCP servers, tune reasoning and task modes, and govern behavior with policies—without rebuilding orchestration from scratch.
 >
-> **Policy Types & Enterprise Value:**
+> | Feature | How |
+> |---------|-----|
+> | **MCP, OpenAPI & LangChain tools** | [`mcp_servers.yaml`](src/cuga/backend/tools_env/registry/config/mcp_servers.yaml) · `CugaAgent(tools=[...])` |
+> | **Reasoning modes** (fast / balanced / accurate) | `[features] cuga_mode` in [`settings.toml`](src/cuga/settings.toml) · [`configurations/modes/`](src/cuga/configurations/modes/) |
+> | **Hybrid API + browser tasks** | `[advanced_features] mode = 'hybrid'` · Playwright + [browser extension](src/frontend_workspaces/extension/readme.md) |
+> | **Multi-agent (CugaSupervisor)** | `cuga start demo_supervisor` · `[supervisor]` in [`settings.toml`](src/cuga/settings.toml) |
+> | **A2A & remote agents** | External agent entries in supervisor config · [CugaSupervisor](https://docs.cuga.dev/docs/sdk/cuga_supervisor) |
+> | **Policies & HITL** | [Policies SDK](https://docs.cuga.dev/docs/sdk/policies/) — Intent Guard, Playbook, Tool Approval, Tool Guide, Output Formatter |
+> | **Manage & publish** | `cuga start manager` · draft tools, MCP, LLM, and policies in the web UI, then **publish** a versioned config for production chat ([details](#manage-publish-and-self-hosting)) |
+> | **Reflection** | `[advanced_features] reflection_enabled` in [`settings.toml`](src/cuga/settings.toml) |
+> | **Langflow** | Low-code visual workflows — integrates with CUGA ([langflow.org](https://www.langflow.org/)) |
+> | **Memory** (optional) | `enable_memory` in `settings.toml` · `uv sync --extra memory` · `cuga start memory` |
+> | **Agent skills** | `[skills] enabled = true` · `SKILL.md` under `.cuga/skills` · try `cuga start demo_skills` · [Agent skills](#agent-skills) |
+> | **Self-host on a cluster** | Helm chart and deploy scripts in [`deployment/`](deployment/) · [Kubernetes guide](deployment/README.md) (local kind/minikube, or registry push for cloud clusters) |
+> | **Save & reuse** _(experimental)_ | `cuga_mode = "save_reuse_fast"` in `settings.toml` |
 >
-> | Policy Type | Value | Use Cases |
-> |------------|-------|-----------|
-> | **Intent Guard** | Block unauthorized actions | Data deletion prevention, access restrictions, compliance enforcement |
-> | **Playbook** | Standardize workflows | Onboarding, audit workflows, regulatory compliance |
-> | **Tool Approval** | Human oversight | Financial transactions, data modifications |
-> | **Tool Guide** | Domain knowledge | Compliance notes, domain context |
-> | **Output Formatter** | Format, redirect, govern outputs | report generation, response routing, output masking |
->
-> 📚 **Documentation**: [SDK Guide](https://docs.cuga.dev/docs/sdk/cuga_agent/) | [Policies Guide](https://docs.cuga.dev/docs/sdk/policies/) | [Quick Start →](#-using-cuga-as-a-python-sdk)
+> [SDK](https://docs.cuga.dev/docs/sdk/cuga_agent/) · [Policies](https://docs.cuga.dev/docs/sdk/policies/) · [Quick Start →](#quick-start)
 
 ## Why CUGA?
 
-### 🏆 Benchmark Performance
+### Benchmark Performance
 
 CUGA achieves state-of-the-art performance on leading benchmarks:
 
-- 🥇 **#1 on [AppWorld](https://appworld.dev/leaderboard)** — a benchmark with 750 real-world tasks across 457 APIs
-- 🥈 **Top-tier on [WebArena](https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=0#gid=0)** (#1 from 02/25 - 09/25) — a complex benchmark for autonomous web agents across application domains
+- **#1 on [AppWorld](https://appworld.dev/leaderboard)** — a benchmark with 750 real-world tasks across 457 APIs
+- **Top-tier on [WebArena](https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=0#gid=0)** (#1 from 02/25 - 09/25) — a complex benchmark for autonomous web agents across application domains
 
-### ✨ Key Features & Capabilities
+### Key Features & Capabilities
 
 - **High-performing generalist agent** — Benchmarked on complex web and API tasks. Combines best-of-breed agentic patterns (e.g. planner-executor, code-act) with structured planning and smart variable management to prevent hallucination and handle complexity
-
-- **Configurable reasoning modes** — Balance performance and cost/latency with flexible modes ranging from fast heuristics to deep planning, optimizing for your specific task requirements
 
 - **Flexible agent and tool integration** — Seamlessly integrate tools via OpenAPI specs, MCP servers, and Langchain, enabling rapid connection to REST APIs, custom protocols, and Python functions
 
@@ -68,10 +72,18 @@ CUGA achieves state-of-the-art performance on leading benchmarks:
 
 - **Save-and-reuse capabilities** _(Experimental)_ — Capture and reuse successful execution paths (plans, code, and trajectories) for faster and consistent behavior across repeated tasks
 
-Explore the [Roadmap](#roadmap) to see what's ahead, or join the [🤝 Call for the Community](#call-for-the-community) to get involved.
+- **Agent skills** — Package domain workflows as `SKILL.md` files with frontmatter; the agent discovers them and loads full instructions on demand via the `load_skill` tool (see [Agent skills](#agent-skills))
+
+### Manage, publish, and self-hosting
+
+**Manage and publish** — Run `cuga start manager` to start the manage-mode stack. You edit agent configuration (tools, MCP servers, LLM selection, policies) as a **draft**, try it in the draft chat, then **publish** to create a new version that production chat uses. Published versions are tracked so you can roll forward and audit what shipped.
+
+**Self-host on Kubernetes** — The repo includes a Helm chart under [`deployment/helm/`](deployment/helm/), helper scripts such as [`deployment/deploy-local.sh`](deployment/deploy-local.sh), and documentation for building images, pushing to a registry, and wiring API keys via Kubernetes secrets for clusters such as kind, minikube, Docker Desktop Kubernetes, GKE, EKS, or AKS. See [deployment/README.md](deployment/README.md).
+
+Explore the [Roadmap](#roadmap) to see what's ahead, or join the [Call for the Community](#call-for-the-community) to get involved.
 
 
-## 🎬 CUGA in Action
+## CUGA in Action
 
 ### Hybrid Task Execution
 
@@ -98,7 +110,7 @@ Experience CUGA's hybrid capabilities by combining API calls with web interactio
 2. **Install browser API support:**
 
    - Installs playwright browser API and Chromium browser
-   - The `playwright` installer should already be included after installing with [Quick Start](#-quick-start)
+   - The `playwright` installer should already be included after installing with [Quick Start](#quick-start)
 
    ```bash
    playwright install chromium
@@ -125,7 +137,7 @@ Experience CUGA's hybrid capabilities by combining API calls with web interactio
    get top account by revenue from digital sales then add it to current page
    ```
 
-🎯 **What you'll see:** CUGA will fetch data from the Digital Sales API and then interact with the web page to add the account information directly to the current page - demonstrating seamless API-to-web workflow integration!
+**What you'll see:** CUGA will fetch data from the Digital Sales API and then interact with the web page to add the account information directly to the current page - demonstrating seamless API-to-web workflow integration!
 
 </details>
 
@@ -162,14 +174,14 @@ Experience CUGA's Human-in-the-Loop capabilities where the agent pauses for huma
    get best accounts
    ```
 
-🎯 **What you'll see:** CUGA will pause at critical decision points, showing you the planned actions and waiting for your approval before proceeding.
+**What you'll see:** CUGA will pause at critical decision points, showing you the planned actions and waiting for your approval before proceeding.
 
 </details>
 
-## 🚀 Quick Start
+## Quick Start
 
 <details>
-<summary><em style="color: #666;">📋 Prerequisites (click to expand)</em></summary>
+<summary><em style="color: #666;"> Prerequisites (click to expand)</em></summary>
 
 - **Python 3.12+** - [Download here](https://www.python.org/downloads/)
 - **uv package manager** - [Installation guide](https://docs.astral.sh/uv/getting-started/installation/)
@@ -207,7 +219,7 @@ cuga viz
 
 
 <details>
-<summary>🤖 LLM Configuration - Advanced Options</summary>
+<summary> LLM Configuration - Advanced Options</summary>
 
 ---
 
@@ -230,7 +242,7 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
 2. **TOML Configuration** (medium priority)
 3. **Default Values** (lowest priority)
 
-### Option 1: OpenAI 🌐
+### Option 1: OpenAI 
 
 **Setup Instructions:**
 
@@ -254,7 +266,7 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
 - API Version: OpenAI's default API Version
 - Base URL: OpenAI's default endpoint
 
-### Option 2: IBM WatsonX 🔵
+### Option 2: IBM WatsonX 
 
 **Setup Instructions:**
 
@@ -308,7 +320,7 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    OPENAI_BASE_URL=https://your-litellm-endpoint.com  # Override base URL
    OPENAI_API_VERSION=2024-08-06        # Override API version
    ```
-### Option 5: Groq Support ⚡
+### Option 5: Groq Support 
 
 **Setup Instructions:**
 
@@ -360,17 +372,77 @@ Each file contains agent-specific model settings that can be overridden by envir
 
 <div style="margin: 20px 0; padding: 15px; border-left: 4px solid #2196F3; border-radius: 4px;">
 
-💡 **Tip:** Want to use your own tools or add your MCP tools? Check out [`src/cuga/backend/tools_env/registry/config/mcp_servers.yaml`](src/cuga/backend/tools_env/registry/config/mcp_servers.yaml) for examples of how to configure custom tools and APIs, including those for digital sales.
+**Tip:** Want to use your own tools or add your MCP tools? Check out [`src/cuga/backend/tools_env/registry/config/mcp_servers.yaml`](src/cuga/backend/tools_env/registry/config/mcp_servers.yaml) for examples of how to configure custom tools and APIs, including those for digital sales.
 
 </div>
 
+## Agent skills
 
+Agent skills are reusable instruction packs: each skill is a `SKILL.md` file with YAML frontmatter and markdown body. CUGA discovers them at startup, lists short descriptions in the agent prompt, and exposes a **`load_skill`** tool so the model pulls the full body only when a task matches that skill—similar to opening a playbook instead of stuffing every procedure into the system prompt.
 
-## 📦 Using CUGA as a Python SDK 
+**Where skills live**
+
+| Location | Role |
+| -------- | ---- |
+| `~/.config/cuga/skills/**/SKILL.md` | Global skills, available in every project |
+| `<CUGA folder>/skills/**/SKILL.md` and `<CUGA folder>/.skills/**/SKILL.md` | Project-local skills (same folder as your workspace policy; often `.cuga` via `CUGA_FOLDER`) |
+
+Use **`skills/`** for project skills (e.g. `.cuga/skills/pptx/SKILL.md`). **`.skills/`** is optional: if the same skill `name` exists under both `skills/` and `.skills/`, the **`.skills/`** copy wins. If the same `name` appears in **global** vs **project-local**, the **project-local** file wins.
+
+**`SKILL.md` shape**
+
+Frontmatter must include **`name`** and **`description`** (shown in the available-skills list). You can add optional **`requirements`** (string or list). The markdown below the frontmatter is the full instruction text returned by `load_skill`.
+
+**Turn skills on**
+
+The easiest way to try skills end-to-end is **`cuga start demo_skills`** (from the repo root; use `uv sync --extra opensandbox` first if you have not already). That command sets skills and OpenSandbox shell tools in the environment for that run—you do **not** need to edit [`settings.toml`](src/cuga/settings.toml) first.
+
+To enable skills persistently or outside that preset, set them in [`src/cuga/settings.toml`](src/cuga/settings.toml):
+
+```toml
+[skills]
+enabled = true
+```
+
+When `enabled` is `false`, skills are fully off: no `load_skill` tool, no skill upload to sandboxes, and `GET /api/skills` returns an empty list. You can also set `DYNACONF_SKILLS__ENABLED=true` in the environment.
+
+For **OpenSandbox shell tools** (`run_command`, `write_file`, …) and the matching prompt guidance, set `[advanced_features] enable_shell_tool = true` in [`settings.toml`](src/cuga/settings.toml) (defaults to `false`; `cuga start demo_skills` turns it on via environment).
+
+**API and sandboxes**
+
+With skills enabled, **`GET /api/skills`** returns discovered skills with metadata (`name`, `description`, `requirements`, `source`). When you use **OpenSandbox** execution with skills on, skill files are synced into the sandbox under `/tmp/cuga_workspace/skills/<skill-name>/` so the agent can run scripts or read companion files there.
+
+**Try it**
+
+From the repository root, install dependencies including the OpenSandbox extra so shell-tool imports resolve, then start the preset:
+
+```bash
+uv sync --extra opensandbox
+cuga start demo_skills
+```
+
+That preset enables skills together with OpenSandbox shell tools so you can experiment with listing skills, loading one with `load_skill`, and using files inside the sandbox workspace.
+
+**Install a sample skill (Anthropic `pptx`)**
+
+The [Anthropic skills repo](https://github.com/anthropics/skills) publishes ready-made folders such as [`skills/pptx`](https://github.com/anthropics/skills/tree/main/skills/pptx) (`SKILL.md`, scripts, and helper markdown). Copy that folder into your **project-local** skills tree under `.cuga/skills/` so CUGA discovers it (see **Where skills live** above). From the repository root:
+
+```bash
+mkdir -p .cuga/skills
+git clone --depth 1 https://github.com/anthropics/skills.git .cuga/_skills_upstream
+cp -R .cuga/_skills_upstream/skills/pptx .cuga/skills/
+rm -rf .cuga/_skills_upstream
+```
+
+Restart `cuga start demo_skills` (or your app) so skills are rescanned. You can instead download the `pptx` directory as a ZIP from GitHub and extract it to `.cuga/skills/pptx`.
+
+---
+
+## Using CUGA as a Python SDK
 
 CUGA can be easily integrated into your Python applications as a library. The SDK provides a clean, minimal API for creating and invoking agents with custom tools.
 
-📚 **SDK Documentation**: [SDK Documentation](https://docs.cuga.dev/docs/sdk/cuga_agent/)
+**SDK Documentation**: [SDK Documentation](https://docs.cuga.dev/docs/sdk/cuga_agent/)
 
 ### Quick Start
 
@@ -450,7 +522,7 @@ if __name__ == "__main__":
   - **Tool Guide**: Enhance tool descriptions with additional context
   - **Output Formatter**: Format agent responses based on triggers
 
-📚 **Documentation**: [SDK Guide](https://docs.cuga.dev/docs/sdk/cuga_agent/) | [Policies Guide](https://docs.cuga.dev/docs/sdk/policies/)
+**Documentation**: [SDK Guide](https://docs.cuga.dev/docs/sdk/cuga_agent/) | [Policies Guide](https://docs.cuga.dev/docs/sdk/policies/)
 
 ### Knowledge Base
 
@@ -530,7 +602,7 @@ PDF, DOCX, XLSX, PPTX, HTML, Markdown, images, and more (via Docling).
 
 Orchestrate multiple agents with a single supervisor: delegate tasks to specialized sub-agents, mix local agents with remote A2A agents, and pass data between them.
 
-📚 **Documentation**: [CugaSupervisor](https://docs.cuga.dev/docs/sdk/cuga_supervisor)
+**Documentation**: [CugaSupervisor](https://docs.cuga.dev/docs/sdk/cuga_supervisor)
 
 **Try the supervisor demo:** run the multi-agent demo (CRM + email sub-agents) with:
 
@@ -597,7 +669,7 @@ You can also load agents from YAML with `CugaSupervisor.from_yaml("path/to/confi
 ## Configurations
 
 <details>
-<summary>🔒 Running with a secure code sandbox</summary>
+<summary> Running with a secure code sandbox</summary>
 
 Cuga supports isolated code execution using Docker/Podman containers for enhanced security.
 
@@ -634,7 +706,7 @@ Cuga supports isolated code execution using Docker/Podman containers for enhance
 </details>
 
 <details>
-<summary>☁️ Running with E2B Cloud Sandbox</summary>
+<summary> Running with E2B Cloud Sandbox</summary>
 
 CUGA supports [E2B](https://e2b.dev) for cloud-based code execution in secure, ephemeral sandboxes. This provides better isolation than local execution while being faster than Docker/Podman containers.
 
@@ -742,18 +814,18 @@ E2B will automatically execute code in cloud sandboxes. You'll see logs indicati
 - **Connection timeout**: Check that your firewall allows ngrok connections
 
 **Benefits of E2B**:
-- ✅ No Docker/Podman required
-- ✅ Faster than container-based sandboxing
-- ✅ Cloud-native with automatic scaling
-- ✅ Better isolation than local execution
-- ✅ Supports per-session caching for cost optimization
+- No Docker/Podman required
+- Faster than container-based sandboxing
+- Cloud-native with automatic scaling
+- Better isolation than local execution
+- Supports per-session caching for cost optimization
 
 **Note**: E2B is a paid service with a free tier. Check [e2b.dev/pricing](https://e2b.dev/pricing) for details.
 
 </details>
 
 <details>
-<summary>⚙️ Reasoning modes - Switch between Fast/Balanced/Accurate modes</summary>
+<summary> Reasoning modes - Switch between Fast/Balanced/Accurate modes</summary>
 
 ## Available Modes under `./src/cuga`
 
@@ -786,7 +858,7 @@ cuga_mode = "fast"  # or "balanced" or "accurate" or "custom"
 </details>
 
 <details>
-<summary>🎯 Task Mode Configuration - Switch between API/Web/Hybrid modes</summary>
+<summary> Task Mode Configuration - Switch between API/Web/Hybrid modes</summary>
 
 ## Available Task Modes
 
@@ -867,29 +939,6 @@ instruction_set = "default"  # or any instruction set above
 </details>
 
 <details>
-<summary><em style="color: #666;"> 📹 Optional: Run with memory</em></summary>
-
-1. Install memory dependencies `uv sync --extra memory`
-1. Change `enable_memory = true` in `settings.toml`
-2. Run `cuga start memory`
-
-Watch CUGA with Memory enabled
-
-[LINK]
-
-<b>Would you like to test this? (Advanced Demo)</b>
-
-### Setup Steps:
-
-1. set `enable_memory` flag to true
-2. Run `cuga start memory`
-3. Run `cuga start demo_crm --sample-memory-data` 
-4. go to the cuga webpage and type `Identify the common cities between my cuga_workspace/cities.txt and cuga_workspace/company.txt` . Here you should see the errors related to CodeAgent. Wait for a minute for `tips` to be generated. `Tips` generation can be confirmed from the  terminal where` cuga start memory` was run
-5. Re-run the same utterance again and it should finish in lesser number of steps
-
-</details>
-
-<details>
 <summary><em style="color: #666;"> 🧠 Optional: Use Evolve with CugaLite</em></summary>
 
 Evolve can now be used with **CugaLite** to bring task-specific guidance into the prompt before execution and save completed trajectories after the run.
@@ -904,48 +953,32 @@ This flow is:
 ### Setup Steps:
 
 1. Choose how Evolve will be started.
-
-   Recommended for normal CUGA usage: let the CUGA MCP registry launch Evolve for you.
-
+  Recommended for normal CUGA usage: let the CUGA MCP registry launch Evolve for you.
    In the manager UI, add an MCP tool with:
-
-   - Name: `evolve`
-   - Connection type: `Command (stdio)`
-   - Command: `uvx`
-   - Args:
-
-   ```text
-   --from
-   altk-evolve
-   --with
-   setuptools<70
-   evolve-mcp
-   ```
-
-   Then set the tool environment values in the UI. Recommended defaults:
-
-   ```text
-   EVOLVE_MODEL_NAME=Azure/gpt-4o
-   OPENAI_API_KEY=env://OPENAI_API_KEY # pragma: allowlist secret
-   OPENAI_BASE_URL=env://OPENAI_BASE_URL # pragma: allowlist secret
-   ```
-
-   Notes:
-   - Use a model your gateway/team is actually allowed to access. Replace `Azure/gpt-4o` with the exact allowed model if needed.
-   - `OPENAI_API_KEY=env://OPENAI_API_KEY` means "read the real value from the CUGA process environment at runtime". <!-- pragma: allowlist secret -->
-   - `OPENAI_BASE_URL=env://OPENAI_BASE_URL` means "read the LiteLLM/OpenAI-compatible base URL from the CUGA process environment at runtime". <!-- pragma: allowlist secret -->
-   - `setuptools<70` is included because `milvus-lite` still imports `pkg_resources`.
-
+  - Name: `evolve`
+  - Connection type: `Command (stdio)`
+  - Command: `uvx`
+  - Args: `--from altk-evolve --with setuptools<70 evolve-mcp`
    Important: this command starts Evolve in `stdio` mode through the upstream Evolve package. It is intended to be launched by the CUGA registry, not run manually in a separate terminal.
-
    Alternative for standalone/manual debugging: run Evolve yourself as an SSE server:
+   If you run Evolve from a checked-out `altk-evolve` repo instead of `uvx`, install the Postgres extras first with `uv sync --extra pgvector`.
+2. Add these environment values in the MCP tool UI:
 
-   ```bash
-   uvx --from altk-evolve --with 'setuptools<70' evolve-mcp --transport sse --port 8201
-   ```
+```env
+EVOLVE_BACKEND=postgres
+EVOLVE_PG_HOST=localhost
+EVOLVE_PG_PORT=5432
+EVOLVE_PG_USER=postgres
+EVOLVE_PG_PASSWORD=postgres
+EVOLVE_PG_DBNAME=evolve
+EVOLVE_MODEL_NAME=Azure/gpt-4o
+OPENAI_API_KEY=env://OPENAI_API_KEY
+OPENAI_BASE_URL=env://OPENAI_BASE_URL
+```
 
-   Quote `setuptools<70` when running this in a shell; otherwise `zsh`/`bash` treat `<` as input redirection.
-2. Edit `./src/cuga/settings.toml` and enable lite mode plus Evolve:
+Each `env://...` value tells CUGA to read the real secret or setting from its own process environment at runtime, so make sure PostgreSQL is reachable, `pgvector` is available, and the configured OpenAI/LiteLLM-compatible model is one your gateway is allowed to use.
+
+1. **[Optional]** Edit `./src/cuga/settings.toml` and enable lite mode plus Evolve:
 
 ```toml
 [advanced_features]
@@ -969,13 +1002,17 @@ If you run Evolve manually as a standalone SSE server, keep `url = "http://127.0
 
 If you use Evolve tip generation, make sure the environment for the Evolve MCP server includes the required Evolve model settings. Otherwise `save_trajectory` may fail later with a LiteLLM/OpenAI model access error even when the MCP connection itself works.
 
-3. Start CUGA normally:
+1. Start the same CRM demo with sample workspace files:
 
 ```bash
-cuga start demo
+cuga start demo_crm --sample-memory-data
 ```
 
-4. Run a task that routes through CugaLite
+1. Run a task that routes through CugaLite, for example:
+
+```text
+Identify the common cities between my cuga_workspace/cities.txt and cuga_workspace/company.txt
+```
 
 ### What happens during a run?
 
@@ -993,14 +1030,13 @@ cuga start demo
 - `mode = "registry"` is best when you want Evolve to be fully managed as a normal CUGA MCP tool
 - `mode = "direct"` is best when you are manually running an SSE Evolve server outside CUGA
 - If Evolve is unavailable, times out, or returns no guidance, CUGA continues normally
-- This integration is separate from the older `cuga start memory` namespace / tip workflow
 
 </details>
 
-## 🔧 Advanced Usage
+## Advanced Usage
 
 <details>
-<summary><b>💾 Save & Reuse</b></summary>
+<summary><b> Save & Reuse</b></summary>
 
 ## Setup
 
@@ -1028,19 +1064,19 @@ cuga start demo
 </details>
 
 <details>
-<summary><b>🔧 Adding Tools: Comprehensive Examples</b></summary>
+<summary><b> Adding Tools: Comprehensive Examples</b></summary>
 
 CUGA supports three types of tool integrations. Each approach has its own use cases and benefits:
 
-## 📋 **Tool Types Overview**
+## **Tool Types Overview**
 
 | Tool Type     | Best For                               | Configuration      | Runtime Loading |
 | ------------- | -------------------------------------- | ------------------ | --------------- |
-| **OpenAPI**   | REST APIs, existing services           | `mcp_servers.yaml` | ✅ Build        |
-| **MCP**       | Custom protocols, complex integrations | `mcp_servers.yaml` | ✅ Build        |
-| **LangChain** | Python functions, rapid prototyping    | Direct import      | ✅ Runtime      |
+| **OpenAPI**   | REST APIs, existing services           | `mcp_servers.yaml` | Build        |
+| **MCP**       | Custom protocols, complex integrations | `mcp_servers.yaml` | Build        |
+| **LangChain** | Python functions, rapid prototyping    | Direct import      | Runtime      |
 
-## 📚 **Additional Resources**
+## **Additional Resources**
 
 - **Tool Registry**: [./src/cuga/backend/tools_env/registry/README.md](./src/cuga/backend/tools_env/registry/README.md)
 - **Comprehensive example with different tools + MCP**: [./docs/examples/cuga_with_runtime_tools/README.md](Adding Tools)
@@ -1077,7 +1113,7 @@ All tests are available through `./src/scripts/run_tests.sh`:
 - HF Utterances: Account queries, revenue calculations, playbook execution
 - Execution: Supports local and Docker execution, parallel/sequential modes, cross-version testing
 
-## 🧪 Running Tests
+## Running Tests
 
 Run all tests (unit, integration, and stability):
 
@@ -1091,14 +1127,14 @@ Run unit tests only:
 ./src/scripts/run_tests.sh unit_tests
 ```
 
-## 📊 Evaluation
+## Evaluation
 
 For information on how to evaluate, see the [CUGA Evaluation Documentation](src/cuga/evaluation/README.md)
 
-## 📚 Resources
+## Resources
 
-- 📖 [Example applications](./docs/examples)
-- 📧 Contact: [CUGA Team](https://forms.office.com/pages/responsepage.aspx?id=V3D2_MlQ1EqY8__KZK3Z6UtMUa14uFNMi1EyUFiZFGRUQklOQThLRjlYMFM2R1dYTk5GVTFMRzNZVi4u&route=shorturl)
+- [Example applications](./docs/examples)
+- Contact: [CUGA Team](https://forms.office.com/pages/responsepage.aspx?id=V3D2_MlQ1EqY8__KZK3Z6UtMUa14uFNMi1EyUFiZFGRUQklOQThLRjlYMFM2R1dYTk5GVTFMRzNZVi4u&route=shorturl)
 
 
 ## Call for the Community

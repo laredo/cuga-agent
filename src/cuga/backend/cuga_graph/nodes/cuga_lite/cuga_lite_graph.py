@@ -51,11 +51,12 @@ This class needs architectural changes to support multi-user, multi-model, and m
    - Handle concurrent model/tool requests from different users
 """
 
+import os
 import re
 import json
 import asyncio
 import inspect
-from typing import Any, Optional, Sequence, Dict, List, Tuple
+from typing import Any, Optional, Sequence, Dict, List, Tuple, Set
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -77,13 +78,19 @@ from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     create_mcp_prompt,
     format_apps_for_prompt,
+    normalize_mcp_few_shot_examples,
     PromptUtils,
+    resolve_cuga_lite_few_shots_enabled,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
     CodeExecutor,
     is_find_tools_listing_markdown,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
+    resolved_runtime_model_name,
+    resolve_bind_tools_fields,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
     classify_nl_auto_continue,
     normalize_assistant_text,
@@ -96,6 +103,14 @@ from cuga.configurations.instructions_manager import get_all_instructions_format
 from cuga.backend.llm.utils.helpers import load_one_prompt
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_task
 from pathlib import Path
+
+from cuga.backend.skills import (
+    SkillRegistry,
+    create_skill_tools,
+    discover_skills,
+    format_available_skills_block,
+)
+
 
 try:
     from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
@@ -110,6 +125,373 @@ tracker = ActivityTracker()
 llm_manager = LLMManager()
 
 BACKTICK_PATTERN = r'```python(.*?)```'
+
+
+def _tool_call_kwarg_literal(value: Any) -> str:
+    """Python expression for values reconstructed from JSON tool-call arguments."""
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    return repr(value)
+
+
+def _extract_code_from_response_tool_calls(response: object) -> str | None:
+    """Recover fenced Python from AIMessage.tool_calls when content is empty (proxy/native FC)."""
+    tool_calls: list | None = getattr(response, "tool_calls", None)
+    if not tool_calls:
+        tool_calls = (getattr(response, "additional_kwargs", {}) or {}).get("tool_calls")
+    if not tool_calls:
+        return None
+
+    tc = tool_calls[0]
+    if not isinstance(tc, dict):
+        return None
+
+    name: str | None = tc.get("name") or (tc.get("function") or {}).get("name")
+    args: dict | str = tc.get("args") or (tc.get("function") or {}).get("arguments") or {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            args = {}
+
+    if not name:
+        return None
+
+    args_str = ", ".join(
+        f"{k}={_tool_call_kwarg_literal(v)}" for k, v in (args if isinstance(args, dict) else {}).items()
+    )
+    logger.debug("Recovered tool call '%s' from tool_calls field", name)
+    return f"```python\nresult = await {name}({args_str})\nprint(result)\n```"
+
+
+def _bind_tools_mode_from_settings() -> str:
+    try:
+        m = getattr(settings.advanced_features, "cuga_lite_bind_tools_mode", None)
+        if m is not None and str(m).strip():
+            return str(m).strip().lower()
+    except Exception:
+        pass
+    return "none"
+
+
+def _bind_tools_apps_from_settings():
+    try:
+        raw = getattr(settings.advanced_features, "cuga_lite_bind_tools_apps", None)
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return [raw.strip()] if raw.strip() else []
+        if isinstance(raw, (list, tuple)):
+            return [str(x).strip() for x in raw if str(x).strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _bind_tools_tool_names_from_settings():
+    try:
+        raw = getattr(settings.advanced_features, "cuga_lite_bind_tools_tool_names", None)
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return [raw.strip()] if raw.strip() else []
+        if isinstance(raw, (list, tuple)):
+            return [str(x).strip() for x in raw if str(x).strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _bind_include_find_tools_from_config(cfg: Dict[str, Any]) -> bool:
+    v = cfg.get("cuga_lite_bind_tools_include_find_tools")
+    if v is None:
+        try:
+            v = getattr(settings.advanced_features, "cuga_lite_bind_tools_include_find_tools", False)
+        except Exception:
+            v = False
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes", "on")
+    return bool(v)
+
+
+def _merge_find_tools_into_bound(
+    bound: List[StructuredTool],
+    seen: Set[str],
+    *,
+    include_find_tools: bool,
+    tools_context_ref: Optional[Dict[str, Any]],
+) -> None:
+    if not include_find_tools:
+        return
+    ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
+    if not ft:
+        return
+    name = getattr(ft, "name", None) or ""
+    if name and name not in seen:
+        seen.add(name)
+        bound.append(ft)
+
+
+async def _indexed_provider_tools_first_wins(
+    tool_provider: ToolProviderInterface,
+) -> Dict[str, StructuredTool]:
+    """Map tool name → StructuredTool using provider.get_all_tools (first occurrence wins)."""
+    try:
+        all_tools = await tool_provider.get_all_tools()
+    except Exception as e:
+        logger.warning("bind_tools: get_all_tools failed: %s", e)
+        return {}
+    by_name: Dict[str, StructuredTool] = {}
+    duplicates: Set[str] = set()
+    for t in all_tools or []:
+        n = getattr(t, "name", None) or ""
+        if not n:
+            continue
+        if n in by_name:
+            duplicates.add(n)
+            continue
+        by_name[n] = t
+    if duplicates:
+        logger.debug(
+            "bind_tools: duplicate tool names from provider (using first): %s",
+            sorted(duplicates),
+        )
+    return by_name
+
+
+async def _indexed_tools_for_native_bind(
+    tool_provider: ToolProviderInterface,
+    tools_context_ref: Optional[Dict[str, Any]],
+) -> Dict[str, StructuredTool]:
+    """Registry MCP tools plus in-graph overlays (skills, OpenSandbox shell, todos, find_tools).
+
+    ``run_command`` / ``write_file`` / etc. are not registered with ToolRegistryProvider; prepare
+    copies them onto ``tools_for_prompt`` only. Overlay must merge so ``cuga_lite_bind_tools_tool_names``
+    can bind them by name.
+    """
+    by_name = await _indexed_provider_tools_first_wins(tool_provider)
+    overlay = (tools_context_ref or {}).get("_lc_bind_tools_overlay_structured_tools") or []
+    if not overlay:
+        return by_name
+    for t in overlay:
+        n = getattr(t, "name", None) or ""
+        if not n:
+            continue
+        by_name[n] = t
+    return by_name
+
+
+async def resolve_model_with_bind_tools(
+    active_model: BaseChatModel,
+    *,
+    configurable: Optional[Dict[str, Any]],
+    tools_context_ref: Optional[Dict[str, Any]],
+    tool_provider: Optional[ToolProviderInterface],
+    model_name: Optional[str] = None,
+) -> BaseChatModel:
+    """Optionally wrap ``active_model`` with ``bind_tools`` for native tool-calling tests.
+
+    LangGraph ``config['configurable']`` overrides per-model runtime profile overrides TOML:
+
+    - ``cuga_lite_bind_tools_mode``: ``none`` | ``find_tools`` | ``all`` | ``apps`` | ``tools`` | ``apps_and_tools``
+    - ``cuga_lite_bind_tools_apps``: list of app names (``mode=apps`` or ``apps_and_tools``)
+    - ``cuga_lite_bind_tools_tool_names``: StructuredTool ``name`` values (``mode=tools`` or ``apps_and_tools``)
+    - ``cuga_lite_bind_tools_include_find_tools``: merge ``find_tools`` into ``all`` / ``apps`` / ``tools`` / ``apps_and_tools``
+
+    Profile ``gpt-oss-20b``: see ``model_runtime_profile.GPT_OSS_20B_RUNTIME_DEFAULTS``.
+    """
+    cfg = configurable or {}
+    mn = (model_name or "").strip()
+    if not mn:
+        mn = resolved_runtime_model_name(
+            configurable_llm=cfg.get("llm"),
+            graph_default_model=active_model,
+        )
+    mode, app_names, tool_names, include_find_tools = resolve_bind_tools_fields(
+        configurable,
+        mn,
+        settings_mode_fn=_bind_tools_mode_from_settings,
+        settings_apps_fn=_bind_tools_apps_from_settings,
+        settings_tool_names_fn=_bind_tools_tool_names_from_settings,
+        settings_include_fn=lambda: _bind_include_find_tools_from_config({}),
+    )
+
+    if mode in ("", "none", "false", "0", "off"):
+        if include_find_tools:
+            ft_only = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
+            if ft_only:
+                return active_model.bind_tools([ft_only])
+        return active_model
+
+    try:
+        if mode == "find_tools":
+            ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
+            if ft:
+                return active_model.bind_tools([ft])
+            logger.debug(
+                "cuga_lite_bind_tools_mode=find_tools but find_tools StructuredTool is missing "
+                "(shortlisting may be off)"
+            )
+            return active_model
+
+        if mode == "all":
+            if not tool_provider:
+                logger.warning("cuga_lite_bind_tools_mode=all but tool_provider is missing")
+                return active_model
+            by_name = await _indexed_tools_for_native_bind(tool_provider, tools_context_ref)
+            bound = list(by_name.values())
+            seen: Set[str] = {n for n in by_name}
+            _merge_find_tools_into_bound(
+                bound, seen, include_find_tools=include_find_tools, tools_context_ref=tools_context_ref
+            )
+            if not bound:
+                return active_model
+            return active_model.bind_tools(bound)
+
+        if mode == "apps_and_tools":
+            if not tool_provider:
+                logger.warning("cuga_lite_bind_tools_mode=apps_and_tools but tool_provider is missing")
+                return active_model
+            if not app_names and not tool_names:
+                if include_find_tools:
+                    ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
+                    if ft:
+                        return active_model.bind_tools([ft])
+                logger.warning(
+                    "cuga_lite_bind_tools_mode=apps_and_tools but cuga_lite_bind_tools_apps and "
+                    "cuga_lite_bind_tools_tool_names are both empty "
+                    "(set include_find_tools to bind find_tools only)"
+                )
+                return active_model
+
+            bound: List[StructuredTool] = []
+            seen_names: Set[str] = set()
+            for app_name in app_names:
+                try:
+                    for t in await tool_provider.get_tools(app_name):
+                        name = getattr(t, "name", None) or ""
+                        if name and name not in seen_names:
+                            seen_names.add(name)
+                            bound.append(t)
+                except Exception as e:
+                    logger.warning("bind_tools apps_and_tools: get_tools(%s) failed: %s", app_name, e)
+
+            by_name_lookup: Dict[str, StructuredTool] = {}
+            if tool_names:
+                by_name_lookup = await _indexed_tools_for_native_bind(tool_provider, tools_context_ref)
+
+            missing: List[str] = []
+            if tool_names:
+                for tn in tool_names:
+                    if tn in seen_names:
+                        continue
+                    t = by_name_lookup.get(tn)
+                    if t is None:
+                        missing.append(tn)
+                        continue
+                    seen_names.add(tn)
+                    bound.append(t)
+                if missing:
+                    logger.warning(
+                        "cuga_lite_bind_tools_tool_names not found among provider tools (skipped): %s",
+                        missing,
+                    )
+
+            _merge_find_tools_into_bound(
+                bound, seen_names, include_find_tools=include_find_tools, tools_context_ref=tools_context_ref
+            )
+            if not bound:
+                return active_model
+            return active_model.bind_tools(bound)
+
+        if mode == "apps":
+            if not app_names:
+                if include_find_tools:
+                    ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
+                    if ft:
+                        return active_model.bind_tools([ft])
+                logger.warning(
+                    "cuga_lite_bind_tools_mode=apps but cuga_lite_bind_tools_apps is empty "
+                    "(set include_find_tools to bind find_tools only)"
+                )
+                return active_model
+            if not tool_provider:
+                logger.warning("cuga_lite_bind_tools_mode=apps but tool_provider is missing")
+                return active_model
+
+            bound = []
+            seen: Set[str] = set()
+            for app_name in app_names:
+                try:
+                    for t in await tool_provider.get_tools(app_name):
+                        name = getattr(t, "name", None) or ""
+                        if name and name not in seen:
+                            seen.add(name)
+                            bound.append(t)
+                except Exception as e:
+                    logger.warning("bind_tools apps: get_tools(%s) failed: %s", app_name, e)
+            _merge_find_tools_into_bound(
+                bound, seen, include_find_tools=include_find_tools, tools_context_ref=tools_context_ref
+            )
+            if not bound:
+                return active_model
+            return active_model.bind_tools(bound)
+
+        if mode == "tools":
+            if not tool_names:
+                if include_find_tools:
+                    ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
+                    if ft:
+                        return active_model.bind_tools([ft])
+                logger.warning(
+                    "cuga_lite_bind_tools_mode=tools but cuga_lite_bind_tools_tool_names is empty "
+                    "(set include_find_tools to bind find_tools only)"
+                )
+                return active_model
+            if not tool_provider:
+                logger.warning("cuga_lite_bind_tools_mode=tools but tool_provider is missing")
+                return active_model
+            by_name = await _indexed_tools_for_native_bind(tool_provider, tools_context_ref)
+            if not by_name:
+                return active_model
+            bound = []
+            seen: Set[str] = set()
+            missing: List[str] = []
+            for tn in tool_names:
+                t = by_name.get(tn)
+                if t is None:
+                    missing.append(tn)
+                    continue
+                if tn not in seen:
+                    seen.add(tn)
+                    bound.append(t)
+            if missing:
+                logger.warning(
+                    "cuga_lite_bind_tools_tool_names not found among provider tools (skipped): %s",
+                    missing,
+                )
+            _merge_find_tools_into_bound(
+                bound, seen, include_find_tools=include_find_tools, tools_context_ref=tools_context_ref
+            )
+            if not bound:
+                return active_model
+            return active_model.bind_tools(bound)
+
+        logger.warning(
+            "Unknown cuga_lite_bind_tools_mode: %s (use none|find_tools|all|apps|tools|apps_and_tools)",
+            mode,
+        )
+    except Exception as e:
+        logger.warning("resolve_model_with_bind_tools failed: %s", e)
+    return active_model
+
+
+def _clean_empty_response_retry_meta(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    m = {**(meta or {})}
+    m.pop("_empty_response_correction", None)
+    return m
 
 
 def _get_knowledge_tool_scope_context(
@@ -238,6 +620,9 @@ class CugaLiteState(BaseModel):
     - prepared_prompt: str (dynamically generated prompt)
     - reflection_apps: list of dicts (name, type, description) for reflection prompt
     - reflection_enable_find_tools: whether find_tools shortlisting was enabled
+    - reflection_skills_enabled: whether skills were available to the executor
+    - reflection_skills_prompt_section: rendered skills registry block for reflection
+    - mcp_few_shot_messages: normalized role/content few-shot messages injected before live chat
     - task_todos: latest todo list from create_update_todos (injected as Current Plan on the system prompt)
     """
 
@@ -265,6 +650,9 @@ class CugaLiteState(BaseModel):
     prepared_prompt: Optional[str] = None
     reflection_apps: List[Dict[str, Any]] = Field(default_factory=list)
     reflection_enable_find_tools: bool = False
+    reflection_skills_enabled: bool = False
+    reflection_skills_prompt_section: str = ""
+    mcp_few_shot_messages: List[Dict[str, str]] = Field(default_factory=list)
     task_todos: Optional[List[Dict[str, Any]]] = Field(default=None)
     script: Optional[str] = None
     execution_complete: bool = False
@@ -289,6 +677,27 @@ class CugaLiteState(BaseModel):
         return StateVariablesManager(self)
 
 
+def format_task_todos_system_block(todos: List[Dict[str, str]]) -> str:
+    """Append to system prompt so the model always sees the live todo list (not execution variables)."""
+    if not todos:
+        return ""
+    lines = [
+        "",
+        "---",
+        "",
+        "## Current task todos",
+        "",
+        "Execution only prints **Todos updated** after each change; use this list as the source of truth.",
+        "",
+    ]
+    for i, item in enumerate(todos, start=1):
+        status = item.get("status", "pending")
+        text = item.get("text", "")
+        lines.append(f"{i}. **[{status}]** {text}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _reflection_current_task(state: CugaLiteState) -> str:
     """Prefer ``sub_task``; else last user message that is not sandbox ``Execution output`` feedback."""
     if (state.sub_task or "").strip():
@@ -304,18 +713,11 @@ def _reflection_current_task(state: CugaLiteState) -> str:
 
 
 def extract_and_combine_codeblocks(text: str) -> str:
-    """Extract all codeblocks from a text string and combine them."""
+    """Extract all python codeblocks from text and combine them."""
     code_blocks = re.findall(BACKTICK_PATTERN, text, re.DOTALL)
 
     if code_blocks:
-        processed_blocks = []
-        for block in code_blocks:
-            block = block.strip()
-            processed_blocks.append(block)
-
-        combined_code = "\n\n".join(processed_blocks)
-
-        return combined_code
+        return "\n\n".join(block.strip() for block in code_blocks)
 
     stripped_text = text.strip()
 
@@ -465,6 +867,19 @@ def _compose_find_tools_shortlister_query(query: str, initial_user_message: Opti
     return f"Query: {q}\nTask context (initial user message): {init}"
 
 
+def _web_search_enabled() -> bool:
+    return bool(getattr(settings.advanced_features, "enable_web_search", False))
+
+
+def _ensure_web_app(apps: List[Any], all_apps: List[Any]) -> List[Any]:
+    if not _web_search_enabled() or any(getattr(app, "name", None) == "web" for app in apps):
+        return apps
+    web_app = next((app for app in all_apps if getattr(app, "name", None) == "web"), None)
+    if web_app:
+        return [*apps, web_app]
+    return apps
+
+
 async def create_find_tools_tool(
     all_tools: Sequence[StructuredTool],
     all_apps: List[Any],
@@ -545,31 +960,48 @@ async def create_find_tools_tool(
     )
 
 
-async def create_update_todos_tool(agent_state: Optional['AgentState'] = None) -> StructuredTool:
+def _serialize_todos_for_store(todos_list: List[Any]) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    for t in todos_list:
+        if isinstance(t, Todo):
+            out.append({"text": t.text, "status": t.status})
+        elif hasattr(t, "model_dump"):
+            d = t.model_dump()
+            out.append({"text": str(d.get("text", "")), "status": str(d.get("status", "pending"))})
+        elif isinstance(t, dict):
+            out.append({"text": str(t.get("text", "")), "status": str(t.get("status", "pending"))})
+        else:
+            out.append({"text": str(t), "status": "pending"})
+    return out
+
+
+async def create_update_todos_tool(
+    agent_state: Optional['AgentState'] = None,
+    todos_store_ref: Optional[List[Dict[str, str]]] = None,
+) -> StructuredTool:
     """Create a create_update_todos StructuredTool for managing task todos.
 
     Args:
-        agent_state: Optional AgentState to store todos for prompt updates
+        agent_state: Optional AgentState (reserved for future use)
+        todos_store_ref: Mutable list shared with the graph; latest todos are written here for the system prompt.
 
     Returns:
         StructuredTool configured for creating and updating todos
     """
 
-    async def create_update_todos_func(input_data) -> TodosOutput:
+    async def create_update_todos_func(todos: Any) -> TodosOutput:
         """Create or update a list of todos for complex multi-step tasks.
 
         Use this tool when you have a complex task that requires multiple steps.
         This helps you track progress and organize your work.
 
         Args:
-            input_data: Can be:
-                       - A TodosInput Pydantic model
-                       - A dict with 'todos' key: {"todos": [...]}
-                       - A list directly: [...] (will be wrapped in {"todos": [...]})
+            todos: List of todo dicts/models (matches ``TodosInput.todos`` / tool schema).
 
         Returns:
-            Structured todo list (also mirrored under **Current Plan** on the system prompt after execution).
+            Short confirmation only (full list is shown in the system prompt via todos_store_ref).
         """
+        input_data = todos
         # Handle different input types
         if isinstance(input_data, TodosInput):
             todos_list = input_data.todos
@@ -597,16 +1029,51 @@ async def create_update_todos_tool(agent_state: Optional['AgentState'] = None) -
                 # Last resort: wrap in a list
                 todos_list = [Todo(**input_data) if isinstance(input_data, dict) else input_data]
 
+        if todos_store_ref is not None:
+            serialized = _serialize_todos_for_store(todos_list)
+            todos_store_ref.clear()
+            todos_store_ref.extend(serialized)
+
         normalized = [t if isinstance(t, Todo) else Todo(**t) for t in todos_list]
         return TodosOutput(todos=normalized)
 
     return StructuredTool.from_function(
         func=create_update_todos_func,
         name="create_update_todos",
-        description="Create or update a list of todos for complex multi-step tasks. Use this when you have a task that requires more than one step. You can pass either: (1) A list directly: create_update_todos([{'text': '...', 'status': 'pending'}, ...]) or (2) A dict with 'todos' key: create_update_todos({'todos': [{'text': '...', 'status': 'pending'}, ...]}). Each todo dict should have 'text' (task description) and 'status' ('pending', 'in_progress', or 'completed'). Returns a todos payload; the same list is appended to the system prompt as Current Plan after the code runs.",
+        description="Create or update a list of todos for complex multi-step tasks. Pass `todos` as a list of objects with 'text' and 'status' ('pending', 'in_progress', or 'completed'). Returns a todos payload; the full list is shown in the system prompt under 'Current task todos' (Current Plan).",
         args_schema=TodosInput,
         return_direct=False,
     )
+
+
+_BUNDLED_FIND_TOOLS_FEW_SHOT_JSON = (
+    Path(__file__).resolve().parent / "prompts" / "find_tools_few_shot_examples.json"
+)
+
+
+def _resolve_find_tools_few_shot_json_path() -> Optional[Path]:
+    if _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON.is_file():
+        return _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON
+    return None
+
+
+def _load_default_find_tools_few_shot_examples() -> List[Dict[str, str]]:
+    path = _resolve_find_tools_few_shot_json_path()
+    if path is None:
+        logger.debug(
+            "Find-tools few-shot JSON not found (expected packaged %s or repo samples copy); skipping",
+            _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON,
+        )
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        normalized = normalize_mcp_few_shot_examples(raw)
+        if normalized:
+            logger.info(f"Loaded {len(normalized)} find_tools MCP few-shot turn(s) from {path}")
+        return normalized
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning(f"Could not load find_tools few-shot JSON from {path}: {e}")
+        return []
 
 
 def create_cuga_lite_graph(
@@ -649,6 +1116,8 @@ def create_cuga_lite_graph(
         base_instructions,
         tools_context_dict,
         base_special_instructions,
+        task_todos_ref: List[Dict[str, str]],
+        lc_bind_tools_meta: Dict[str, Any] = None,
     ):
         """Factory to create prepare node with closure over tool provider and config."""
 
@@ -662,6 +1131,16 @@ def create_cuga_lite_graph(
             Tools are available via closure (per graph instance), prompt is stored in state.
 
             enable_todos is read from config["configurable"] at runtime.
+
+            Optional configurable key ``mcp_few_shot_examples``: overrides few-shots—a JSON string or
+            list of dicts with ``role`` and ``content``. If absent (or explicitly ``None``) and
+            ``find_tools`` is enabled, ``prompts/find_tools_few_shot_examples.json`` (bundled next to the
+            MCP template) is loaded, with optional fallback to repo ``samples/cuga_lite/mcp_few_shot_examples.json``.
+            Bundled few-shots only apply when ``find_tools`` shortlisting is active
+            (``total_tool_count > shortlisting_tool_threshold``, see settings configurable).
+
+            Disable few-shots entirely via ``advanced_features.cuga_lite_enable_few_shots`` in settings.toml
+            or ``cuga_lite_enable_few_shots`` in configurable (skips prefix chat few-shots).
             """
             configurable = config.get("configurable", {}) if config else {}
             enable_todos = (
@@ -673,6 +1152,14 @@ def create_cuga_lite_graph(
                 configurable.get("shortlisting_tool_threshold")
                 if "shortlisting_tool_threshold" in configurable
                 else settings.advanced_features.shortlisting_tool_threshold
+            )
+            _runtime_model_name = resolved_runtime_model_name(
+                configurable_llm=configurable.get("llm"),
+                graph_default_model=model,
+            )
+            few_shots_enabled = resolve_cuga_lite_few_shots_enabled(
+                configurable,
+                model_name=_runtime_model_name,
             )
             logger.debug(
                 f"[APPROVAL DEBUG] prepare_tools_and_apps received cuga_lite_metadata: {state.cuga_lite_metadata}"
@@ -721,12 +1208,15 @@ def create_cuga_lite_graph(
                 force_lite_apps = getattr(settings.advanced_features, 'force_lite_mode_apps', [])
                 if force_lite_apps:
                     allowed_apps_names = list(set([state.sub_task_app] + force_lite_apps))
+                    if _web_search_enabled():
+                        allowed_apps_names.append("web")
                     # call authenticate_apps for the allowed apps
                     if settings.advanced_features.benchmark == "appworld":
                         await TaskAnalyzer.call_authenticate_apps(force_lite_apps)
                     apps_for_prompt = [app for app in all_apps if app.name in allowed_apps_names]
                 else:
                     apps_for_prompt = [app for app in all_apps if app.name == state.sub_task_app]
+                    apps_for_prompt = _ensure_web_app(apps_for_prompt, all_apps)
                 # Get only tools for this specific app
                 tools_for_execution = []
                 for app in apps_for_prompt:
@@ -745,6 +1235,7 @@ def create_cuga_lite_graph(
                     for app in state.api_intent_relevant_apps
                     if hasattr(app, 'type') and app.type == 'api'
                 ]
+                apps_for_prompt = _ensure_web_app(apps_for_prompt, all_apps)
                 # Get tools only for the identified apps
                 tools_for_execution = []
                 for app in apps_for_prompt:
@@ -764,7 +1255,7 @@ def create_cuga_lite_graph(
                     app_tools = await base_tool_provider.get_tools(app.name)
                     app_to_tools_map[app.name] = app_tools
 
-            enable_find_tools = total_tool_count > shortlisting_threshold
+            enable_find_tools = total_tool_count > shortlisting_threshold or _web_search_enabled()
 
             if enable_find_tools:
                 logger.info(
@@ -798,14 +1289,40 @@ def create_cuga_lite_graph(
                     else find_tool.func
                 )
                 tools_context_dict['find_tools'] = make_tool_awaitable(find_tool_func)
+                if lc_bind_tools_meta is not None:
+                    lc_bind_tools_meta["_lc_bind_tools_find_tools"] = find_tool
                 logger.info(
                     "Exposing only find_tools in prompt (all tools + find_tools available in execution context)"
                 )
 
+            if few_shots_enabled:
+                if "mcp_few_shot_examples" in configurable:
+                    raw_fs = configurable["mcp_few_shot_examples"]
+                    if raw_fs is not None:
+                        few_shot_examples = normalize_mcp_few_shot_examples(raw_fs)
+                    elif enable_find_tools:
+                        few_shot_examples = _load_default_find_tools_few_shot_examples()
+                    else:
+                        few_shot_examples = []
+                elif enable_find_tools:
+                    few_shot_examples = _load_default_find_tools_few_shot_examples()
+                else:
+                    few_shot_examples = []
+                    logger.debug(
+                        "Bundled MCP few-shots (prompts/find_tools_few_shot_examples.json) not loaded: find_tools "
+                        "is off "
+                        f"(total_tool_count={total_tool_count} <= shortlisting_tool_threshold="
+                        f"{shortlisting_threshold}). Lower the threshold via configurable or add apps/tools."
+                    )
+            else:
+                few_shot_examples = []
+                logger.debug("MCP few-shots disabled (cuga_lite_enable_few_shots=false)")
+            if few_shot_examples:
+                logger.debug(f"MCP few-shot examples: {len(few_shot_examples)} turns")
+
             # Add create_update_todos tool for complex task management if enabled
             if enable_todos:
-                # Pass the CugaLiteState so todos updates are reflected in the graph state
-                todos_tool = await create_update_todos_tool(agent_state=state)
+                todos_tool = await create_update_todos_tool(agent_state=state, todos_store_ref=task_todos_ref)
                 tools_for_prompt.append(todos_tool)
                 # Add to tools context for sandbox execution
                 # Prefer coroutine over func to avoid run_in_executor issues
@@ -840,6 +1357,26 @@ def create_cuga_lite_graph(
                 else:
                     logger.debug("No tool guides found in metadata")
 
+            skill_tools = []
+            skills_prompt_section = ""
+            skills_enabled = False
+            effective_special = base_special_instructions or ""
+            skills_cfg_on = getattr(settings.skills, "enabled", False)
+            cuga_folder_for_skills = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+            if skills_cfg_on:
+                skill_entries = discover_skills(cuga_folder_for_skills)
+                if skill_entries:
+                    skill_registry = SkillRegistry(skill_entries)
+                    skill_tools = create_skill_tools(skill_registry)
+                    tools_for_prompt.extend(skill_tools)
+                    skills_prompt_section = format_available_skills_block(skill_registry)
+                    skills_enabled = True
+                    logger.info(
+                        f"Loaded {len(skill_entries)} agent skill(s) from .agents/skills and "
+                        f"~/.config/agents/skills with legacy {cuga_folder_for_skills}/skills and "
+                        "~/.config/cuga/skills fallbacks"
+                    )
+
             # Update tools context with all execution tools
             # Wrap to make awaitable (agent always uses await)
             for tool in tools_for_execution:
@@ -860,10 +1397,46 @@ def create_cuga_lite_graph(
                 else:
                     logger.warning(f"Tool '{tool.name}' has no callable function, skipping")
 
-            # Fetch Evolve guidelines if enabled
+            for tool in skill_tools:
+                tool_func = None
+                if hasattr(tool, "coroutine") and tool.coroutine:
+                    tool_func = tool.coroutine
+                elif hasattr(tool, "func") and tool.func:
+                    tool_func = tool.func
+                else:
+                    tool_func = getattr(tool, "_run", None)
+                if tool_func:
+                    tools_context_dict[tool.name] = make_tool_awaitable(tool_func)
+                else:
+                    logger.warning(f"Skill tool '{tool.name}' has no callable, skipping")
+
+            # Inject sandbox tools when OpenSandbox is enabled and shell tools are allowed
+            if getattr(settings.advanced_features, 'opensandbox_sandbox', False) and getattr(
+                settings.advanced_features, "enable_shell_tool", False
+            ):
+                from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
+
+                cfg = config.get("configurable", {}) if config else {}
+                if "thread_id" in cfg:
+                    runtime_thread_id = cfg["thread_id"]
+                else:
+                    runtime_thread_id = state.thread_id or thread_id
+
+                opensandbox_executor = CodeExecutor._get_opensandbox_executor()
+                sandbox_tools = opensandbox_executor.create_sandbox_tools(thread_id=runtime_thread_id)
+                for st in sandbox_tools:
+                    # Prefer coroutine for async execution context
+                    fn = st.coroutine or st.func
+                    if fn:
+                        tools_context_dict[st.name] = fn
+                tools_for_prompt.extend(sandbox_tools)
+                logger.info(
+                    f"[OpenSandbox] Injected sandbox tools (thread_id={runtime_thread_id!r}) into execution context and prompt: {[t.name for t in sandbox_tools]}"
+                )
+
             from cuga.backend.evolve.integration import EvolveIntegration
 
-            special_instructions_final = base_special_instructions
+            special_instructions_final = effective_special or ""
             if EvolveIntegration.is_enabled():
                 task_description = ""
                 if state.sub_task:
@@ -1009,15 +1582,15 @@ def create_cuga_lite_graph(
                             pass
                     if not agent_id:
                         agent_id = "cuga-default"
-                    thread_id = cfg.get("thread_id")
+                    awareness_thread_id = cfg.get("thread_id")
                     kb_ctx = format_knowledge_context(
                         agent_id,
-                        thread_id,
+                        awareness_thread_id,
                         engine=engine,
                         agent_config_hash=knowledge_config_hash,
                     )
                     logger.info(
-                        f"Knowledge awareness: agent_id={agent_id}, thread_id={thread_id}, "
+                        f"Knowledge awareness: agent_id={agent_id}, thread_id={awareness_thread_id}, "
                         f"agent_collection={kb_ctx.get('agent_collection')}, "
                         f"session_collection={kb_ctx.get('session_collection')}"
                     )
@@ -1077,6 +1650,11 @@ def create_cuga_lite_graph(
                             logger.info(f"Knowledge awareness injected: {len(knowledge_block)} chars")
                 except Exception as e:
                     logger.debug(f"Knowledge awareness injection skipped: {e}")
+            if lc_bind_tools_meta is not None:
+                lc_bind_tools_meta["_lc_bind_tools_overlay_structured_tools"] = [
+                    t for t in (tools_for_prompt or []) if getattr(t, "name", None)
+                ]
+
             # Create prompt dynamically
             dynamic_prompt = prompt
 
@@ -1094,7 +1672,27 @@ def create_cuga_lite_graph(
                     enable_find_tools=enable_find_tools,
                     enable_todos=enable_todos,
                     special_instructions=special_instructions_final,
+                    skills_enabled=skills_enabled,
+                    skills_prompt_section=skills_prompt_section,
+                    enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),
                     has_knowledge=has_knowledge_tools,
+                    few_shot_examples=few_shot_examples,
+                    few_shots_enabled=few_shots_enabled,
+                )
+                logger.info(
+                    "Prepared CugaLite prompt: enable_find_tools={} few_shot_message_turns={} "
+                    "few_shots_as_messages={} prompt_chars={}",
+                    enable_find_tools,
+                    len(few_shot_examples),
+                    bool(few_shot_examples),
+                    len(dynamic_prompt),
+                )
+            else:
+                logger.info(
+                    "Using static CugaLite prompt; dynamic few-shot injection skipped "
+                    "(enable_find_tools={} few_shot_turns={})",
+                    enable_find_tools,
+                    len(few_shot_examples),
                 )
 
             reflection_apps_snapshot = format_apps_for_prompt(apps_for_prompt or [])
@@ -1108,13 +1706,23 @@ def create_cuga_lite_graph(
                     "cuga_lite_metadata": state.cuga_lite_metadata,
                     "reflection_apps": reflection_apps_snapshot,
                     "reflection_enable_find_tools": enable_find_tools,
+                    "reflection_skills_enabled": skills_enabled,
+                    "reflection_skills_prompt_section": skills_prompt_section,
+                    "mcp_few_shot_messages": few_shot_examples,
                 },
             )
 
         return prepare_tools_and_apps
 
     # Factory function to create call_model node with access to model
-    def create_call_model_node(base_model, base_callbacks, model_settings=None):
+    def create_call_model_node(
+        base_model,
+        base_callbacks,
+        task_todos_ref: List[Dict[str, str]],
+        model_settings=None,
+        tools_context_ref=None,
+        base_tool_provider=None,
+    ):
         """Factory to create call_model node. Model is taken from config['configurable']['llm']
         when set (injected at invocation), otherwise uses base_model from graph build.
         """
@@ -1137,19 +1745,34 @@ def create_cuga_lite_graph(
 
             # Get prompt from state (tools are available via sandbox context, not needed here)
             dynamic_prompt = state.prepared_prompt or ""
-            _cfg_early = config.get("configurable", {}) if config else {}
-            _enable_todos_prompt = (
-                _cfg_early.get("enable_todos")
-                if "enable_todos" in _cfg_early
+
+            _cfg = config.get("configurable", {}) if config else {}
+            _enable_todos = (
+                _cfg.get("enable_todos")
+                if "enable_todos" in _cfg
                 else settings.advanced_features.enable_todos
             )
-            if _enable_todos_prompt and state.task_todos:
-                dynamic_prompt = (
-                    f"{dynamic_prompt.rstrip()}\n\n{format_current_plan_section(state.task_todos)}"
-                )
+
+            system_content = dynamic_prompt
+            if _enable_todos:
+                if task_todos_ref:
+                    system_content = dynamic_prompt + format_task_todos_system_block(task_todos_ref)
+                elif state.task_todos:
+                    system_content = dynamic_prompt + format_current_plan_section(state.task_todos)
 
             # Convert BaseMessage objects to dict format for model invocation
-            messages_for_model = [{"role": "system", "content": dynamic_prompt}]
+            messages_for_model = [{"role": "system", "content": system_content}]
+            few_shot_messages = state.mcp_few_shot_messages or []
+            for example in few_shot_messages:
+                role = (example.get("role") or "").strip().lower()
+                content = example.get("content") or ""
+                if role in {"user", "assistant"} and content:
+                    messages_for_model.append({"role": role, "content": content})
+            if few_shot_messages:
+                logger.info(
+                    "Injected {} MCP few-shot turn(s) as chat messages before live conversation",
+                    len(few_shot_messages),
+                )
 
             # Check if we have variables and this is a new question (not a follow-up with existing AI responses)
             # If this is a new question (1 user msg, 0 AI msgs) or follow-up, add variables to the last user message
@@ -1200,6 +1823,10 @@ def create_cuga_lite_graph(
             configurable = config.get("configurable", {}) if config else {}
             current_callbacks = configurable.get("callbacks", base_callbacks or [])
             active_model = configurable.get("llm") or base_model
+            _runtime_model_name = resolved_runtime_model_name(
+                configurable_llm=configurable.get("llm"),
+                graph_default_model=base_model,
+            )
 
             # ── Context management BEFORE building messages_for_model ────────────
             effective_chat_messages = await apply_context_summarization(
@@ -1304,9 +1931,18 @@ def create_cuga_lite_graph(
                         )
 
             try:
-                response = await active_model.ainvoke(
+                invoke_model = await resolve_model_with_bind_tools(
+                    active_model,
+                    configurable=configurable,
+                    tools_context_ref=tools_context_ref,
+                    tool_provider=base_tool_provider,
+                    model_name=_runtime_model_name,
+                )
+
+                response = await invoke_model.ainvoke(
                     messages_for_model, config={"callbacks": current_callbacks}
                 )
+                logger.debug(f"Response: {response}")
             except Exception as e:
                 code = extract_code_from_tool_use_failed(e)
                 if code:
@@ -1320,7 +1956,36 @@ def create_cuga_lite_graph(
                 else:
                     raise e
 
-            content = normalize_assistant_text(response.content)
+            _resp_tool_calls = getattr(response, "tool_calls", None) or []
+            _resp_ak_keys = list((getattr(response, "additional_kwargs", None) or {}).keys())
+            _resp_finish = (getattr(response, "response_metadata", None) or {}).get(
+                "finish_reason", "unknown"
+            )
+            logger.debug(
+                f"LLM response — type: {type(response).__name__} | "
+                f"content_len: {len(response.content or '')} | "
+                f"finish_reason: {_resp_finish} | "
+                f"tool_calls: {_resp_tool_calls} | "
+                f"additional_kwargs_keys: {_resp_ak_keys}"
+            )
+
+            raw_content = normalize_assistant_text(response.content)
+            if not raw_content:
+                tool_code = _extract_code_from_response_tool_calls(response)
+                if tool_code:
+                    logger.warning(
+                        "Empty content with tool_calls detected (proxy conversion); "
+                        "recovering tool call as Python code"
+                    )
+                    raw_content = tool_code
+                elif _resp_finish not in ("stop", "unknown"):
+                    logger.warning(
+                        f"LLM returned empty content with finish_reason='{_resp_finish}'; "
+                        "likely a safety filter or terminal stop."
+                    )
+
+            content = raw_content
+
             reasoning_str = normalize_assistant_text(response.additional_kwargs.get('reasoning_content'))
 
             tracker.collect_step(step=Step(name="Raw_Assistant_Response", data=content))
@@ -1367,7 +2032,7 @@ def create_cuga_lite_graph(
                 logger.debug(f"Step count: {new_step_count}/{limit}")
 
                 # Update metadata to mark playbook guidance as added
-                updated_metadata = state.cuga_lite_metadata or {}
+                updated_metadata = _clean_empty_response_retry_meta(state.cuga_lite_metadata or {})
                 if playbook_guidance:
                     updated_metadata = {**updated_metadata, "playbook_guidance_added": True}
 
@@ -1405,7 +2070,7 @@ def create_cuga_lite_graph(
                 logger.debug(f"Step count: {new_step_count}/{limit}")
 
                 # Update metadata to mark playbook guidance as added
-                updated_metadata = state.cuga_lite_metadata or {}
+                updated_metadata = _clean_empty_response_retry_meta(state.cuga_lite_metadata or {})
                 if playbook_guidance:
                     updated_metadata = {**updated_metadata, "playbook_guidance_added": True}
 
@@ -1468,7 +2133,10 @@ def create_cuga_lite_graph(
             max_steps = (
                 configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
             )
-            current_thread_id = configurable.get("thread_id", base_thread_id)
+            if "thread_id" in configurable:
+                current_thread_id = configurable["thread_id"]
+            else:
+                current_thread_id = state.thread_id or base_thread_id
             current_apps_list = configurable.get("apps_list", base_apps_list)
             track_tool_calls = configurable.get("track_tool_calls", False)
             reflection_enabled = (
@@ -1556,6 +2224,8 @@ def create_cuga_lite_graph(
                                 "coder_agent_output": output,
                                 "apps": state.reflection_apps or [],
                                 "enable_find_tools": state.reflection_enable_find_tools,
+                                "skills_enabled": state.reflection_skills_enabled,
+                                "skills_prompt_section": state.reflection_skills_prompt_section,
                                 "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
                             }
                         )
@@ -1638,8 +2308,14 @@ def create_cuga_lite_graph(
 
         return sandbox
 
-    # Create mutable tools context that will be populated by prepare_node
+    # Mutable list shared by prepare (create_update_todos) and call_model (system prompt section).
+    task_todos_ref: List[Dict[str, str]] = []
+
+    # Execution context: callable tools for the sandbox. Populated by prepare_node.
     tools_context = {}
+    # LangChain bind-tools metadata: _lc_bind_tools_* entries for resolve_model_with_bind_tools.
+    # Kept separate so it never leaks into context_locals used by the code executor.
+    lc_bind_tools_meta: Dict[str, Any] = {}
 
     # Create node instances using factories
     prepare_node = create_prepare_node(
@@ -1648,8 +2324,17 @@ def create_cuga_lite_graph(
         instructions,
         tools_context,
         special_instructions,
+        task_todos_ref,
+        lc_bind_tools_meta=lc_bind_tools_meta,
     )
-    call_model_node = create_call_model_node(model, callbacks, model_settings=model_settings)
+    call_model_node = create_call_model_node(
+        model,
+        callbacks,
+        task_todos_ref,
+        model_settings=model_settings,
+        tools_context_ref=lc_bind_tools_meta,
+        base_tool_provider=tool_provider,
+    )
     sandbox_node = create_sandbox_node(tools_context, thread_id, apps_list)
 
     # Build the graph
