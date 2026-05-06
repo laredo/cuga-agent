@@ -180,6 +180,9 @@ app = typer.Typer(
 
 app.add_typer(policy_app, name="policy")
 
+from cuga.personal.cli.main import personal_app  # noqa: E402
+app.add_typer(personal_app, name="personal")
+
 # Global variables to track running direct processes (registry/demo)
 direct_processes = {}
 shutdown_event = threading.Event()

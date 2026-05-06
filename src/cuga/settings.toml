@@ -213,3 +213,31 @@ save_on_success = true       # Save trajectory on successful task completion
 save_on_failure = true       # Save trajectory on failed task completion
 async_save = true            # Fire-and-forget trajectory saving (non-blocking)
 timeout = 30.0               # Timeout in seconds for Evolve MCP calls
+
+[personal]
+enabled = false                           # Master toggle for CUGA Personal
+skill_dirs = ["~/.cuga/skills/", "./skills/"]  # Directories scanned for skill bundles
+default_channel = "cli"                   # Default delivery channel: "cli" | "slack" | "email"
+
+[personal.slack]
+enabled = false
+bot_token = ""           # Override with env: SLACK_BOT_TOKEN
+app_token = ""           # Override with env: SLACK_APP_TOKEN (Socket Mode)
+signing_secret = ""      # Override with env: SLACK_SIGNING_SECRET
+default_channel = ""     # Default channel for outbound messages
+
+[personal.email]
+enabled = false
+imap_server = ""
+smtp_server = ""
+email_address = ""
+
+[personal.scheduler]
+enabled = true
+check_interval = 30
+max_concurrent_jobs = 5
+
+[personal.model_routing]
+enabled = false
+cheap_model = ""
+expensive_model = ""

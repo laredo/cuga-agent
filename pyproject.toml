@@ -70,6 +70,11 @@ evolve = ["altk-evolve>=1.0.6; python_version>='3.12'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
 # Note: When using observability extra, ensure python-dotenv>=1.1.0 is installed to avoid conflicts
 observability = ["openlit>=1.40.3"]
+personal = [
+    "slack-bolt>=1.18.0",
+    "croniter>=1.4.0",
+    "questionary>=2.1.0",
+]
 
 [project.urls]
 Homepage = "https://cuga.dev"

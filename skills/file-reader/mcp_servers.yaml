@@ -1,0 +1,5 @@
+mcpServers:
+  filesystem:
+    url: "http://localhost:8112/sse"
+    transport: sse
+    description: "Local filesystem access (read-only within workspace)"

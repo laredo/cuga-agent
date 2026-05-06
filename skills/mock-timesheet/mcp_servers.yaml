@@ -1,0 +1,26 @@
+# Mock timesheet skill — tool configuration
+# In production, replace these with real service endpoints
+
+# Example of how a real configuration would look:
+# services:
+#   - timesheet_api:
+#       url: https://timesheet.internal.company.com/openapi.json
+#       description: "Corporate timesheet API"
+#       auth:
+#         type: bearer
+#         value: "${TIMESHEET_API_TOKEN}"
+#   - jira:
+#       url: https://yourcompany.atlassian.net/rest/openapi.json
+#       description: "Jira issue tracker"
+#       auth:
+#         type: basic
+#         value: "${JIRA_USER}:${JIRA_API_TOKEN}"
+
+# For the demo, tools are provided as in-process LangChain tools
+# registered in skills/mock-timesheet/tools.py (no external server needed)
+demo_tools:
+  module: skills.mock_timesheet.tools
+  tools:
+    - get_calendar_events
+    - get_jira_tickets
+    - submit_timesheet
