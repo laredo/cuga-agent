@@ -1,0 +1,46 @@
+---
+name: knowledge-store
+description: "Store URLs, articles, and notes into CUGA's knowledge base for later retrieval and synthesis"
+version: "0.1.0"
+author: "cuga-personal"
+platforms: [slack, cli]
+requires_tools: [knowledge]
+commands: ["/store", "/remember", "/save"]
+triggers:
+  - type: keyword
+    value: ["store this", "remember this", "save this", "add this", "keep this", "note this"]
+    operator: or
+  - type: natural_language
+    value: ["store this link", "save this for later", "add this to my knowledge", "remember this article"]
+enterprise:
+  category: knowledge
+  approval_required: false
+  data_classification: internal
+---
+
+# Knowledge Store Skill
+
+Captures URLs, articles, Slack forwards, and free-text notes into CUGA's knowledge base.
+Stored content is available for querying and for the bulletin skill to synthesize.
+
+## What this skill does
+
+- Detects URLs in the user's message and ingests the page content via `ingest_knowledge_url`
+- Accepts plain text notes: write the text to `/tmp/cuga-note-<slug>.md`, then call `ingest_knowledge` with that file path and `scope="agent"`
+- Always uses `scope="agent"` so content persists across sessions
+- Confirms each storage with a one-line summary
+
+## Handling plain text (no URL)
+
+When the user provides a text snippet to store and no URL is present:
+1. Use the code executor to write the text to `/tmp/cuga-note-<short-slug>.md`
+2. Call `ingest_knowledge(file_path="/tmp/cuga-note-<short-slug>.md", scope="agent")`
+3. Confirm with one line: "Stored: [brief description]"
+
+Do NOT refuse plain-text input. Do NOT ask for a URL. Always write text to a temp file and ingest it.
+
+## Usage examples
+
+- Forward a link: `store this as a v3.4 feature` + URL → calls `ingest_knowledge_url`
+- Save a note: `/store We shipped async exports — reduces wait time by 80%` → writes temp file, calls `ingest_knowledge`
+- Save an article: `/remember https://example.com/article` → calls `ingest_knowledge_url`

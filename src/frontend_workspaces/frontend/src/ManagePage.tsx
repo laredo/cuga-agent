@@ -43,6 +43,8 @@ import {
   Download,
   Upload,
   Tools,
+  SkillLevel as SkillIcon,
+  Package as PackageIcon,
 } from "@carbon/icons-react";
 import Markdown from "@carbon/ai-chat-components/es/react/markdown.js";
 import CarbonChat from "./carbon-chat/CarbonChat";
@@ -222,10 +224,21 @@ export function ManagePage() {
   const [manageVariablesPanelOpen, setManageVariablesPanelOpen] = useState(false);
   const [currentVersion, setCurrentVersion] = useState<number | "draft" | null>(null);
   const [draftSaving, setDraftSaving] = useState(false);
-  const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
+  const [agentContext, setAgentContext] = useState<{
+    agent_id: string;
+    config_version: number | null;
+    skills_enabled?: boolean;
+    workspace_filesystem_root?: string;
+    knowledge_enabled?: boolean;
+    agent_level_knowledge_enabled?: boolean;
+    session_level_knowledge_enabled?: boolean;
+  } | null>(null);
   const [agentName, setAgentName] = useState("");
   const [agentDescription, setAgentDescription] = useState("");
   const [secretsModalOpen, setSecretsModalOpen] = useState(false);
+  const [skills, setSkills] = useState<Array<{ name: string; description: string; requirements: string[]; source: string }>>([]);
+  const [skillsLoading, setSkillsLoading] = useState(false);
+  const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
   const [showKnowledgeModal, setShowKnowledgeModal] = useState(false);
   const [knowledgeHealthy, setKnowledgeHealthy] = useState<boolean | null>(null);
   const [knowledgeHealthStatus, setKnowledgeHealthStatus] = useState<string>("unknown");
@@ -270,6 +283,14 @@ export function ManagePage() {
           setAgentContext({
             agent_id: data.agent_id ?? "cuga-default",
             config_version: data.config_version ?? null,
+            skills_enabled: Boolean(data.skills_enabled),
+            workspace_filesystem_root:
+              typeof data.workspace_filesystem_root === "string"
+                ? data.workspace_filesystem_root
+                : undefined,
+            knowledge_enabled: Boolean(data.knowledge_enabled),
+            agent_level_knowledge_enabled: Boolean(data.agent_level_knowledge_enabled),
+            session_level_knowledge_enabled: Boolean(data.session_level_knowledge_enabled),
           })
       )
       .catch(() => {});
@@ -621,6 +642,21 @@ export function ManagePage() {
   }, [loadLatest, loadHistory]);
 
   useEffect(() => {
+    if (agentContext === null) return;
+    if (!agentContext.skills_enabled) {
+      setSkills([]);
+      setSkillsLoading(false);
+      return;
+    }
+    setSkillsLoading(true);
+    api.getSkills()
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => data && setSkills(data.skills ?? []))
+      .catch(() => {})
+      .finally(() => setSkillsLoading(false));
+  }, [agentContext]);
+
+  useEffect(() => {
     if (!(knowledgeConfig.enabled ?? true) || !(knowledgeConfig.agent_level_enabled ?? true)) {
       setKnowledgeDocCount(0);
     }
@@ -647,7 +683,6 @@ export function ManagePage() {
     }
   }, []);
 
-  // Knowledge health check and doc count on mount
   useEffect(() => {
     api.setKnowledgeAgentId(effectiveAgentId || "cuga-default");
 
@@ -1495,6 +1530,66 @@ export function ManagePage() {
                   />
               </AccordionItem>
 
+              {agentContext?.skills_enabled ? (
+              <AccordionItem title="Skills">
+                {skillsLoading ? (
+                  <InlineLoading description="Loading skills…" />
+                ) : skills.length === 0 ? (
+                  <p className="cds--type-body-compact-01" style={{ color: "var(--cds-text-secondary)" }}>
+                    No skills found. Add SKILL.md files under <code>.cuga/.skills/</code> or <code>.cuga/skills/</code>.
+                  </p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                    {skills.map((skill) => {
+                      const pipDeps = skill.requirements.filter((r) => !r.startsWith("npm:"));
+                      const npmDeps = skill.requirements.filter((r) => r.startsWith("npm:")).map((r) => r.slice(4));
+                      const LIMIT = 120;
+                      const isLong = skill.description.length > LIMIT;
+                      const isExpanded = expandedSkills.has(skill.name);
+                      const displayDesc = isLong && !isExpanded
+                        ? skill.description.slice(0, LIMIT).trimEnd() + "…"
+                        : skill.description;
+                      return (
+                        <Tile key={skill.name} style={{ padding: "0.75rem 1rem" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.35rem" }}>
+                            <SkillIcon size={16} />
+                            <span style={{ fontWeight: 600, fontSize: "0.875rem" }}>{skill.name}</span>
+                            <Tag type="green" size="sm" style={{ marginLeft: "auto" }}>active</Tag>
+                          </div>
+                          <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", marginBottom: pipDeps.length || npmDeps.length ? "0.5rem" : 0, lineHeight: 1.4 }}>
+                            {displayDesc}
+                            {isLong && (
+                              <button
+                                onClick={() => setExpandedSkills((prev) => {
+                                  const next = new Set(prev);
+                                  isExpanded ? next.delete(skill.name) : next.add(skill.name);
+                                  return next;
+                                })}
+                                style={{ background: "none", border: "none", padding: 0, marginLeft: "0.25rem", cursor: "pointer", fontSize: "0.75rem", color: "var(--cds-link-primary)" }}
+                              >
+                                {isExpanded ? "less" : "more"}
+                              </button>
+                            )}
+                          </p>
+                          {(pipDeps.length > 0 || npmDeps.length > 0) && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem", alignItems: "center" }}>
+                              <PackageIcon size={12} style={{ color: "var(--cds-text-secondary)", flexShrink: 0 }} />
+                              {pipDeps.map((d) => (
+                                <Tag key={d} type="gray" size="sm">{d}</Tag>
+                              ))}
+                              {npmDeps.map((d) => (
+                                <Tag key={d} type="teal" size="sm">npm:{d}</Tag>
+                              ))}
+                            </div>
+                          )}
+                        </Tile>
+                      );
+                    })}
+                  </div>
+                )}
+              </AccordionItem>
+              ) : null}
+
               <AccordionItem title="Welcome Screen">
                   <VStack gap={5}>
                     <FormGroup legendText="">
@@ -1577,7 +1672,6 @@ export function ManagePage() {
                         onChange={(_e: unknown, { value }: { value: number | string }) =>
                           updateMaxSteps(Number(value) || 70)
                         }
-                        onBlur={() => performDraftSave()}
                       />
                     </FormGroup>
                     <FormGroup legendText="">
@@ -1590,7 +1684,6 @@ export function ManagePage() {
                         onChange={(_e: unknown, { value }: { value: number | string }) =>
                           updateShortlistingThreshold(Number(value) || 35)
                         }
-                        onBlur={() => performDraftSave()}
                         helperText="Enable find_tools when total tools exceed this count"
                       />
                     </FormGroup>
