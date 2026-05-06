@@ -263,16 +263,25 @@ export async function deleteConversation(threadId: string): Promise<Response> {
   });
 }
 
-export async function getWorkspaceTree(): Promise<Response> {
-  return apiFetch("/api/workspace/tree");
+export async function getSkills(): Promise<Response> {
+  return apiFetch("/api/skills");
 }
 
-export async function getWorkspaceFile(path: string): Promise<Response> {
-  return apiFetch(`/api/workspace/file?path=${encodeURIComponent(path)}`);
+export async function getWorkspaceTree(threadId?: string): Promise<Response> {
+  const q = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
+  return apiFetch(`/api/workspace/tree${q}`);
 }
 
-export async function getWorkspaceDownload(path: string): Promise<Response> {
-  return apiFetch(`/api/workspace/download?path=${encodeURIComponent(path)}`);
+export async function getWorkspaceFile(path: string, threadId?: string): Promise<Response> {
+  const params = new URLSearchParams({ path });
+  if (threadId) params.set("thread_id", threadId);
+  return apiFetch(`/api/workspace/file?${params.toString()}`);
+}
+
+export async function getWorkspaceDownload(path: string, threadId?: string): Promise<Response> {
+  const params = new URLSearchParams({ path });
+  if (threadId) params.set("thread_id", threadId);
+  return apiFetch(`/api/workspace/download?${params.toString()}`);
 }
 
 export async function getAgents(): Promise<Response> {

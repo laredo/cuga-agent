@@ -17,7 +17,7 @@ from pathlib import Path
 import traceback
 from pydantic import BaseModel, ValidationError
 from fastapi import Depends, FastAPI, Request, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import openlit_init BEFORE any other Cuga imports.
@@ -62,6 +62,13 @@ from cuga.config import (
 )
 from cuga.backend.server import manage_routes
 from cuga.backend.server import secrets_routes
+from cuga.backend.server.workspace_sandbox import (
+    SANDBOX_WORKSPACE_ROOT,
+    fetch_sandbox_workspace_tree,
+    read_sandbox_workspace_bytes,
+    sandbox_text_preview,
+    workspace_tree_is_sandbox_backed,
+)
 from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
 from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
 from cuga.backend.server.auth.models import TokenResponse, UserInfo
@@ -69,6 +76,38 @@ from cuga.backend.server.conversation_history import get_conversation_db
 
 # Default user ID for conversation history
 DEFAULT_USER_ID = "default_user"
+
+
+def _workspace_thread_id(request: Request, query_thread_id: Optional[str]) -> Optional[str]:
+    tid = (query_thread_id or "").strip() or (request.headers.get("x-thread-id") or "").strip()
+    return tid or None
+
+
+def _strip_redundant_cuga_workspace_prefix(user_path: str) -> str:
+    """Older tree API used paths like ``cuga_workspace/foo``; normalize to ``foo``."""
+    p = (user_path or "").strip().replace("\\", "/")
+    while p.startswith("cuga_workspace/"):
+        p = p[len("cuga_workspace/") :]
+    if p == "cuga_workspace":
+        p = ""
+    return p.strip() or "."
+
+
+def _resolve_path_under_cuga_workspace(user_path: str) -> Path:
+    """Resolve user_path to an absolute path; must stay under cuga_workspace."""
+    user_path = _strip_redundant_cuga_workspace_prefix(user_path)
+    workspace_path = (Path(os.getcwd()) / "cuga_workspace").resolve()
+    ws = os.fspath(workspace_path)
+    if os.path.isabs(user_path):
+        resolved = os.path.abspath(user_path)
+    else:
+        resolved = os.path.abspath(os.path.join(ws, user_path))
+    candidate = Path(resolved)
+    try:
+        candidate.relative_to(workspace_path)
+    except (ValueError, RuntimeError) as e:
+        raise ValueError("Path outside workspace") from e
+    return candidate
 
 
 def _session_knowledge_collection(thread_id: str) -> str:
@@ -476,7 +515,12 @@ async def lifespan(app: FastAPI):
             token_path.chmod(0o600)
             os.environ["CUGA_INTERNAL_TOKEN_FILE"] = str(token_path)
             if not os.environ.get("CUGA_BACKEND_URL"):
-                os.environ["CUGA_BACKEND_URL"] = f"http://localhost:{os.environ.get('PORT', '7860')}"
+                auth = getattr(settings, "auth", None)
+                ssl_enabled = bool(
+                    os.environ.get("SSL_KEYFILE", "").strip() and os.environ.get("SSL_CERTFILE", "").strip()
+                )
+                scheme = "https" if ssl_enabled or getattr(auth, "require_https", False) else "http"
+                os.environ["CUGA_BACKEND_URL"] = f"{scheme}://localhost:{os.environ.get('PORT', '7860')}"
 
         logger.info("Knowledge engine started at %s", kb_config.persist_dir)
         app_state.set_subsystem_status(
@@ -517,7 +561,13 @@ async def lifespan(app: FastAPI):
                     "knowledge", "failed", "Knowledge subsystem failed during warmup", {"error": str(e)}
                 )
 
-        app_state.background_tasks.append(asyncio.create_task(_warm()))
+        async def _knowledge_warmup_then_maybe_oobe_pdf():
+            await _warm()
+            from cuga.backend.server import demo_manage_setup as dms
+
+            await dms.seed_demo_knowledge_oobe_pdf_via_engine_if_needed(app_state)
+
+        app_state.background_tasks.append(asyncio.create_task(_knowledge_warmup_then_maybe_oobe_pdf()))
 
     # Store the initializer on app_state so manage_routes can call it on-demand
     app_state.initialize_knowledge_engine = initialize_knowledge_engine
@@ -2986,11 +3036,15 @@ async def get_agents_list(current_user: Optional[UserInfo] = Depends(require_man
 
 @app.get("/api/agent/context")
 async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_auth)):
-    """Return current agent id and config version for UI."""
+    """Return current agent id, config version, and UI flags for manage/chat."""
     return JSONResponse(
         {
             "agent_id": getattr(app_state, "agent_id", "cuga-default"),
             "config_version": getattr(app_state, "config_version", None),
+            "skills_enabled": getattr(settings.skills, "enabled", False),
+            "workspace_filesystem_root": (
+                SANDBOX_WORKSPACE_ROOT if workspace_tree_is_sandbox_backed() else "cuga_workspace"
+            ),
             "knowledge_enabled": _knowledge_enabled_for_app_state(app_state),
             "agent_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "agent"),
             "session_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "session"),
@@ -2998,10 +3052,59 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
     )
 
 
+@app.get("/api/skills")
+async def get_skills(current_user: Optional[UserInfo] = Depends(require_chat_access)):
+    """Return discovered agent skills with metadata from their SKILL.md frontmatter."""
+
+    def _public_skill_source(source: str) -> str:
+        p = Path(source)
+        if p.name.lower() == "skill.md":
+            return p.parent.name
+        return p.name
+
+    if not getattr(settings.skills, "enabled", False):
+        return {"skills": []}
+    try:
+        from cuga.backend.skills import discover_skills
+
+        cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+        entries = discover_skills(cuga_folder)
+        return {
+            "skills": [
+                {
+                    "name": e.name,
+                    "description": e.description,
+                    "requirements": list(e.requirements),
+                    "source": _public_skill_source(e.source),
+                }
+                for e in entries
+            ]
+        }
+    except Exception:
+        logger.exception("Failed to load skills")
+        raise HTTPException(status_code=500, detail="Failed to load skills")
+
+
 @app.get("/api/workspace/tree")
-async def get_workspace_tree(current_user: Optional[UserInfo] = Depends(require_chat_access)):
+async def get_workspace_tree(
+    request: Request,
+    thread_id: Optional[str] = Query(None),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
+):
     """Endpoint to retrieve the workspace folder tree."""
     try:
+        tid = _workspace_thread_id(request, thread_id)
+        sandbox_mode = workspace_tree_is_sandbox_backed()
+        if sandbox_mode:
+            if not tid:
+                return JSONResponse({"tree": []})
+            try:
+                tree = await fetch_sandbox_workspace_tree(tid)
+            except Exception as e:
+                logger.warning(f"Sandbox workspace tree failed: {e}")
+                raise HTTPException(status_code=503, detail="Sandbox workspace unavailable") from e
+            return JSONResponse({"tree": tree})
+
         workspace_path = Path(os.getcwd()) / "cuga_workspace"
 
         if not workspace_path.exists():
@@ -3009,8 +3112,12 @@ async def get_workspace_tree(current_user: Optional[UserInfo] = Depends(require_
             return JSONResponse({"tree": []})
 
         def build_tree(path: Path, base_path: Path) -> dict:
-            """Recursively build file tree."""
-            relative_path = str(path.relative_to(base_path.parent))
+            """Recursively build file tree.
+
+            Paths must be relative to ``cuga_workspace`` (not include a ``cuga_workspace/``
+            prefix) so ``_resolve_path_under_cuga_workspace`` matches the file on disk.
+            """
+            relative_path = str(path.relative_to(base_path))
 
             if path.is_file():
                 return {"name": path.name, "path": relative_path, "type": "file"}
@@ -3026,11 +3133,17 @@ async def get_workspace_tree(current_user: Optional[UserInfo] = Depends(require_
                 return {"name": path.name, "path": relative_path, "type": "directory", "children": children}
 
         tree = []
-        for item in sorted(workspace_path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-            if not item.name.startswith('.'):
-                tree.append(build_tree(item, workspace_path))
+        visible = [
+            item
+            for item in sorted(workspace_path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+            if not item.name.startswith('.')
+        ]
+        for item in visible:
+            tree.append(build_tree(item, workspace_path))
 
         return JSONResponse({"tree": tree})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to load workspace tree: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to load workspace tree: {str(e)}")
@@ -3038,19 +3151,36 @@ async def get_workspace_tree(current_user: Optional[UserInfo] = Depends(require_
 
 @app.get("/api/workspace/file")
 async def get_workspace_file(
+    request: Request,
     path: str,
+    thread_id: Optional[str] = Query(None),
     current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to retrieve a file's content from the workspace."""
     try:
-        file_path = Path(path)
+        tid = _workspace_thread_id(request, thread_id)
+        if workspace_tree_is_sandbox_backed():
+            if not tid:
+                raise HTTPException(status_code=400, detail="thread_id required for sandbox workspace")
+            try:
+                content = await sandbox_text_preview(tid, path)
+            except ValueError:
+                raise HTTPException(status_code=403, detail="Access denied: Path outside workspace")
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail="File not found")
+            except IsADirectoryError:
+                raise HTTPException(status_code=400, detail="Path is not a file")
+            except OSError as e:
+                if "too large" in str(e).lower():
+                    raise HTTPException(status_code=413, detail="File too large to preview (max 10MB)") from e
+                raise HTTPException(status_code=500, detail="Failed to load file") from e
+            except UnicodeDecodeError:
+                raise HTTPException(status_code=415, detail="File is not a text file")
+            return JSONResponse({"content": content, "path": str(path)})
 
-        # Security check: ensure the path is within cuga_workspace
         try:
-            file_path = file_path.resolve()
-            workspace_path = (Path(os.getcwd()) / "cuga_workspace").resolve()
-            file_path.relative_to(workspace_path)
-        except (ValueError, RuntimeError):
+            file_path = _resolve_path_under_cuga_workspace(path)
+        except ValueError:
             raise HTTPException(status_code=403, detail="Access denied: Path outside workspace")
 
         if not file_path.exists():
@@ -3085,18 +3215,37 @@ async def get_workspace_file(
 
 @app.get("/api/workspace/download")
 async def download_workspace_file(
+    request: Request,
     path: str,
+    thread_id: Optional[str] = Query(None),
     current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Download a file from the workspace."""
     try:
-        workspace_path = (Path(os.getcwd()) / "cuga_workspace").resolve()
-        file_path = (workspace_path / path).resolve()
+        tid = _workspace_thread_id(request, thread_id)
+        if workspace_tree_is_sandbox_backed():
+            if not tid:
+                raise HTTPException(status_code=400, detail="thread_id required for sandbox workspace")
+            try:
+                data, dl_name = await read_sandbox_workspace_bytes(tid, path)
+            except ValueError:
+                raise HTTPException(status_code=403, detail="Access denied: Path outside workspace")
+            except IsADirectoryError:
+                raise HTTPException(status_code=400, detail="Path is not a file")
+            except Exception as e:
+                if "not found" in str(e).lower() or "no such file" in str(e).lower():
+                    raise HTTPException(status_code=404, detail="File not found") from e
+                logger.debug(f"Sandbox workspace download failed: {e}")
+                raise HTTPException(status_code=500, detail="Failed to download file") from e
+            return Response(
+                content=data,
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": f'attachment; filename="{dl_name}"'},
+            )
 
-        # Security check: ensure the path is within cuga_workspace
         try:
-            file_path.relative_to(workspace_path)
-        except (ValueError, RuntimeError):
+            file_path = _resolve_path_under_cuga_workspace(path)
+        except ValueError:
             raise HTTPException(status_code=403, detail="Access denied: Path outside workspace")
 
         if not file_path.exists():
