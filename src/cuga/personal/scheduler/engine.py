@@ -1,4 +1,5 @@
 """SchedulerEngine — cron-based asyncio job runner."""
+
 import asyncio
 import uuid
 from datetime import datetime, timezone
@@ -65,11 +66,10 @@ class SchedulerEngine:
     # ------------------------------------------------------------------
 
     async def execute_job(self, job: ScheduledJob) -> None:
-        """Run the skill for this job and deliver the result."""
+        """Run the skill for this job, deliver the draft, and request approval."""
         try:
             skill = await self._skill_loader.load(job.skill_name)
 
-            # build a synthetic MessageEvent so session_manager can create a session
             event = MessageEvent(
                 id=str(uuid.uuid4()),
                 channel_id=job.delivery.channel_id,
@@ -84,7 +84,16 @@ class SchedulerEngine:
             await self._skill_loader.activate(skill, agent)
             result = await agent.invoke(job.prompt, thread_id=session.thread_id)
 
-            await self._gateway.send(target=job.delivery, text=result.answer)
+            # Store as pending approval so the next "approve" message posts it
+            session.pending_approval = result.answer
+            session.active_skill = job.skill_name
+
+            approval_prompt = (
+                f"{result.answer}\n\n"
+                f"---\n"
+                f"Reply **approve** to post to #product-updates, or **discard** to cancel."
+            )
+            await self._gateway.send(target=job.delivery, text=approval_prompt)
 
             job.runs_completed += 1
             job.last_run = datetime.now(timezone.utc)
@@ -119,6 +128,7 @@ class SchedulerEngine:
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
+
 
 def _next_run(cron_expr: str) -> Optional[datetime]:
     """Return the next datetime after now for the given cron expression."""

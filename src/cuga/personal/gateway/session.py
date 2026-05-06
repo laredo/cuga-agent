@@ -1,4 +1,5 @@
 """Session management: maps platform user identities to CUGA agent thread IDs."""
+
 import uuid
 from typing import Any, Dict, Optional
 
@@ -14,13 +15,19 @@ class Session:
         self.thread_id = thread_id
         self.user_context: Dict[str, Any] = {}
         self.active_skill: Optional[str] = None
+        # Text of a bulletin (or other artifact) awaiting explicit user approval.
+        # Set by the orchestrator or scheduler after a draft is delivered.
+        self.pending_approval: Optional[str] = None
         self._agent = None  # lazily created CugaAgent
 
     def get_agent(self):
         """Return the CugaAgent for this session, creating it lazily."""
         if self._agent is None:
             from cuga import CugaAgent
-            self._agent = CugaAgent()
+
+            from cuga.personal.tools.knowledge import get_knowledge_tools
+
+            self._agent = CugaAgent(tools=get_knowledge_tools())
         return self._agent
 
 
@@ -37,14 +44,6 @@ class SessionManager:
         self._sessions: Dict[tuple, Session] = {}
 
     async def get_or_create_session(self, event: MessageEvent) -> Session:
-        """
-        Return the existing session for this (user_id, platform) pair,
-        or create a new one.
-
-        If the event already carries a thread_id (e.g. a Slack thread), that
-        value is used as the CUGA thread_id so the conversation stays in the
-        right context.
-        """
         key = (event.user_id, event.platform)
 
         if key not in self._sessions:
@@ -55,7 +54,6 @@ class SessionManager:
                 thread_id=thread_id,
             )
         elif event.thread_id and self._sessions[key].thread_id != event.thread_id:
-            # Slack thread reply in a different thread — honour the platform thread
             self._sessions[key].thread_id = event.thread_id
 
         return self._sessions[key]

@@ -1,4 +1,5 @@
 """PersonalConfig — reads from CUGA's Dynaconf settings under [personal]."""
+
 from typing import List
 from dataclasses import dataclass, field
 

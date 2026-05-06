@@ -1,4 +1,5 @@
 """Scheduler data models."""
+
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Optional
@@ -18,13 +19,13 @@ class JobState(str, Enum):
 class ScheduledJob(BaseModel):
     id: str
     name: str
-    schedule: str               # cron expression, e.g. "0 16 * * 5"
+    schedule: str  # cron expression, e.g. "0 16 * * 5"
     skill_name: str
-    prompt: str                 # message sent to the agent when the job fires
+    prompt: str  # message sent to the agent when the job fires
     user_id: str
-    delivery: DeliveryTarget    # where to send results
+    delivery: DeliveryTarget  # where to send results
     state: JobState = JobState.ACTIVE
-    repeat: int = -1            # -1 = infinite, N = run N times then complete
+    repeat: int = -1  # -1 = infinite, N = run N times then complete
     runs_completed: int = 0
     last_run: Optional[datetime] = None
     next_run: Optional[datetime] = None

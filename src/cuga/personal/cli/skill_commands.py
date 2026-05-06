@@ -1,4 +1,5 @@
 """CLI commands for managing skills."""
+
 import typer
 from pathlib import Path
 
@@ -9,9 +10,10 @@ skill_app = typer.Typer(help="Manage CUGA Personal skills")
 def list_skills(
     skill_dirs: list[str] = typer.Option(
         ["./skills", "~/.cuga/skills"],
-        "--dir", "-d",
+        "--dir",
+        "-d",
         help="Directories to scan for skills",
-    )
+    ),
 ):
     """List all installed skills."""
     import asyncio

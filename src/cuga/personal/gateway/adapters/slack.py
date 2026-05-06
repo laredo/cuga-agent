@@ -1,4 +1,5 @@
 """Slack channel adapter using slack_bolt (async)."""
+
 import uuid
 from datetime import datetime, timezone
 from typing import Callable, List, Optional
@@ -10,11 +11,11 @@ class SlackAdapter(ChannelAdapter):
     """
     Slack adapter built on slack_bolt AsyncApp.
 
-    Handles: DMs, channel mentions, slash commands, file uploads, thread replies.
-    Requires: SLACK_BOT_TOKEN, SLACK_APP_TOKEN (Socket Mode) or SLACK_SIGNING_SECRET (HTTP).
+    Handles: DMs, channel @mentions, slash commands, thread replies.
+    Uses Socket Mode (SLACK_APP_TOKEN) — no public URL required.
 
-    slack_bolt is an optional dependency — import errors surface only when the adapter
-    is actually instantiated.
+    Filters out bot messages and message_changed/message_deleted subtypes
+    to avoid echo loops.
     """
 
     platform = "slack"
@@ -24,8 +25,7 @@ class SlackAdapter(ChannelAdapter):
             from slack_bolt.async_app import AsyncApp
         except ImportError as e:
             raise ImportError(
-                "slack_bolt is required for SlackAdapter. "
-                "Install with: pip install cuga[personal]"
+                "slack_bolt is required for SlackAdapter. Install with: pip install cuga[personal]"
             ) from e
 
         self._app = AsyncApp(token=bot_token, signing_secret=signing_secret)
@@ -37,7 +37,24 @@ class SlackAdapter(ChannelAdapter):
     def _register_handlers(self):
         @self._app.event("message")
         async def handle_message(event, say):
+            # Ignore bot messages and system subtypes (edits, deletes, joins)
+            if event.get("bot_id") or event.get("subtype"):
+                return
             if self._on_message:
+                msg_event = self.parse_event(event)
+                if msg_event.text:
+                    await self._on_message(msg_event)
+
+        @self._app.event("app_mention")
+        async def handle_mention(event, say):
+            # Strip the @bot mention prefix before dispatching
+            text = event.get("text", "")
+            # Remove <@BOTID> prefix
+            import re
+
+            text = re.sub(r"<@[A-Z0-9]+>\s*", "", text).strip()
+            event = {**event, "text": text}
+            if self._on_message and text:
                 msg_event = self.parse_event(event)
                 await self._on_message(msg_event)
 
@@ -52,7 +69,7 @@ class SlackAdapter(ChannelAdapter):
         pass
 
     async def send(self, target: DeliveryTarget, text: str, files: Optional[List[dict]] = None) -> None:
-        kwargs = {"channel": target.channel_id, "text": text}
+        kwargs: dict = {"channel": target.channel_id, "text": text}
         if target.thread_id:
             kwargs["thread_ts"] = target.thread_id
         await self._client.chat_postMessage(**kwargs)
@@ -75,13 +92,11 @@ class SlackAdapter(ChannelAdapter):
     def parse_event(raw: dict) -> MessageEvent:
         """Convert a raw Slack event dict into a platform-agnostic MessageEvent."""
         files = raw.get("files", [])
-        has_files = bool(files)
-        text = raw.get("text", "")
-        stripped = text.strip()
+        text = raw.get("text", "").strip()
 
-        if stripped.startswith("/"):
+        if text.startswith("/"):
             msg_type = MessageType.COMMAND
-        elif has_files:
+        elif files:
             msg_type = MessageType.FILE
         else:
             msg_type = MessageType.TEXT
@@ -98,7 +113,7 @@ class SlackAdapter(ChannelAdapter):
             user_id=raw.get("user", ""),
             platform="slack",
             type=msg_type,
-            text=stripped,
+            text=text,
             files=[{"name": f.get("name", ""), "url": f.get("url_private", "")} for f in files],
             thread_id=raw.get("thread_ts"),
             timestamp=timestamp,

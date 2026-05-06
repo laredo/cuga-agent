@@ -1,4 +1,5 @@
 """Email channel adapter — IMAP polling for incoming, SMTP for outgoing."""
+
 from typing import Callable, List, Optional
 
 from cuga.personal.gateway.base import ChannelAdapter, DeliveryTarget

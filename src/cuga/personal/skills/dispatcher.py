@@ -1,4 +1,5 @@
 """SkillDispatcher — routes MessageEvents to the right skill."""
+
 from typing import List, Optional
 
 from cuga.personal.gateway.base import MessageEvent, MessageType

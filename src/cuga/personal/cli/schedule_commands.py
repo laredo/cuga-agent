@@ -1,4 +1,5 @@
 """CLI commands for managing scheduled automations."""
+
 import typer
 from typing import Optional
 

@@ -1,13 +1,31 @@
 """SmartModelRouter — routes messages to cheap or expensive LLM."""
+
 import re
 from typing import Dict
 
 
 _COMPLEX_KEYWORDS = {
-    "analyze", "analyse", "compare", "implement", "generate", "create",
-    "design", "architect", "refactor", "migrate", "integrate", "explain",
-    "summarize", "summarise", "evaluate", "investigate", "diagnose",
-    "optimize", "optimise", "plan", "strategy",
+    "analyze",
+    "analyse",
+    "compare",
+    "implement",
+    "generate",
+    "create",
+    "design",
+    "architect",
+    "refactor",
+    "migrate",
+    "integrate",
+    "explain",
+    "summarize",
+    "summarise",
+    "evaluate",
+    "investigate",
+    "diagnose",
+    "optimize",
+    "optimise",
+    "plan",
+    "strategy",
 }
 
 _URL_RE = re.compile(r"https?://\S+")

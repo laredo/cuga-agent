@@ -1,4 +1,5 @@
 """CLI channel adapter — stdin/stdout, reference implementation."""
+
 import asyncio
 import uuid
 from datetime import datetime, timezone

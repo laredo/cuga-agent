@@ -1,4 +1,5 @@
 """SkillLoader — scans directories and loads skill bundles from disk."""
+
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -85,6 +86,7 @@ class SkillLoader:
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
 
 async def _add_policy(policies_manager, policy: dict) -> None:
     """Map a parsed policy dict to the correct CugaAgent async API call."""

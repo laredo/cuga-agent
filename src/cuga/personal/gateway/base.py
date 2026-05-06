@@ -1,4 +1,5 @@
 """Gateway base: platform-agnostic message models and channel adapter ABC."""
+
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum

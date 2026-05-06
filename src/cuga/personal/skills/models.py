@@ -1,4 +1,5 @@
 """Skill data models: SkillMetadata and LoadedSkill."""
+
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -12,9 +13,9 @@ class SkillMetadata(BaseModel):
     description: str
     version: str = "0.1.0"
     author: str = ""
-    platforms: List[str] = []          # empty = all platforms
+    platforms: List[str] = []  # empty = all platforms
     requires_tools: List[str] = []
-    commands: List[str] = []           # slash commands that trigger this skill
+    commands: List[str] = []  # slash commands that trigger this skill
     triggers: List[Dict[str, Any]] = []  # policy-style triggers
     schedule_hint: Optional[str] = None
     enterprise: Dict[str, Any] = {}
@@ -51,6 +52,7 @@ class LoadedSkill(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _split_frontmatter(content: str):
     """Split YAML frontmatter from body. Returns (frontmatter_str, body_str)."""
     content = content.strip()
@@ -61,5 +63,5 @@ def _split_frontmatter(content: str):
     if end == -1:
         return content[3:].strip(), ""
     frontmatter = content[3:end].strip()
-    body = content[end + 4:].strip()
+    body = content[end + 4 :].strip()
     return frontmatter, body
