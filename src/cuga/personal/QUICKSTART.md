@@ -47,6 +47,9 @@ OPENAI_API_KEY=sk-...
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
 
+# Web search (required for product-scout skill)
+TAVILY_API_KEY=tvly-...   # free tier at app.tavily.com
+
 # Optional: point at a non-default backend
 # CUGA_BACKEND_URL=http://localhost:7860
 ```

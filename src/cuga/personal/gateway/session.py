@@ -26,8 +26,9 @@ class Session:
             from cuga import CugaAgent
 
             from cuga.personal.tools.knowledge import get_knowledge_tools
+            from cuga.personal.tools.web_search import get_web_search_tools
 
-            self._agent = CugaAgent(tools=get_knowledge_tools())
+            self._agent = CugaAgent(tools=get_knowledge_tools() + get_web_search_tools())
         return self._agent
 
 
