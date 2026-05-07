@@ -50,7 +50,7 @@ async def setup_slack_integration(app: Any) -> None:
         session_router = SessionRouter(manager=session_manager)
         
         # Initialize Slack components
-        if not initialize_slack(event_queue):
+        if not await initialize_slack(event_queue):
             logger.warning("Slack integration enabled but initialization failed")
             return
         

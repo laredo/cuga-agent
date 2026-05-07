@@ -1,0 +1,22 @@
+[configuration]
+name    = "test_supervisor"
+pattern = "supervisor"
+
+[[agents]]
+id   = "supervisor"
+type = "cuga_supervisor"
+role = "entry"
+
+[[agents]]
+id     = "crm_worker"
+type   = "cuga_lite"
+domain = "crm"
+role   = "worker"
+apps   = ["crm"]
+
+[[agents]]
+id     = "email_worker"
+type   = "cuga_lite"
+domain = "email"
+role   = "worker"
+apps   = ["email"]

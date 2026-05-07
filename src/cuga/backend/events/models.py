@@ -23,6 +23,7 @@ class EventType(str, Enum):
     CRON = "cron"
     HEARTBEAT = "heartbeat"  # Batched periodic monitoring
     CUSTOM = "custom"
+    AGENT = "agent"  # Inter-agent messages via AgentBus
 
 
 class EventSource(str, Enum):

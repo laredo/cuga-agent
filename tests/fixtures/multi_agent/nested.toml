@@ -1,0 +1,48 @@
+[configuration]
+name    = "test_nested"
+pattern = "pipeline"
+
+[[agents]]
+id     = "planner"
+type   = "cuga_lite"
+domain = "planning"
+role   = "entry"
+
+[[agents]]
+id     = "researcher"
+type   = "cuga_lite"
+domain = "research"
+role   = "worker"
+peers  = ["fact_checker"]
+
+[[agents]]
+id     = "fact_checker"
+type   = "cuga_lite"
+domain = "verification"
+role   = "worker"
+peers  = ["researcher"]
+
+[[agents]]
+id     = "writer"
+type   = "cuga_lite"
+domain = "writing"
+role   = "exit"
+
+[[edges]]
+from = "planner"
+to   = "researcher"
+mode = "one_way"
+
+[[edges]]
+from = "researcher"
+to   = "writer"
+mode = "one_way"
+
+[[sub_configurations]]
+name   = "verify"
+agents = ["researcher", "fact_checker"]
+
+  [[sub_configurations.edges]]
+  from = "researcher"
+  to   = "fact_checker"
+  mode = "peer_to_peer"

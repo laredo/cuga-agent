@@ -245,4 +245,5 @@ markers = [
     "e2e: end-to-end tests requiring live external services (registry, etc.)",
     "slack: Slack integration tests requiring a live Slack workspace",
     "reactions: Slack reaction-handling e2e tests (requires reactions:write scope)",
+    "multi_agent: multi-agent system tests (config, bus, state, patterns)",
 ]

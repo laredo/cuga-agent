@@ -11,34 +11,44 @@ from cuga.backend.integrations.slack.notification_channel import SlackNotificati
 
 class SlackEventProcessor:
     """Processes Slack events and sends responses back to Slack
-    
+
     This processor handles all Slack-specific logic including:
     - Message handling (mentions, DMs, commands)
     - Interaction handling (buttons, modals)
     - Reaction handling
     - Error notifications
-    - Optional CUGA agent integration (controlled by CUGA_SLACK_ENABLE env var)
+    - Single-agent mode: CUGA_SLACK_ENABLE=true
+    - Multi-agent mode:  CUGA_SLACK_MULTI_AGENT_CONFIG=<path-to-toml>
     """
-    
+
     def __init__(
         self,
         notification_channel: SlackNotificationChannel,
-        cuga_enabled: Optional[bool] = None
+        cuga_enabled: Optional[bool] = None,
+        multi_agent_runner=None,
     ):
         """Initialize Slack event processor
-        
+
         Args:
             notification_channel: Slack notification channel for sending responses
-            cuga_enabled: Enable CUGA agent integration (default: from CUGA_SLACK_ENABLE env var)
+            cuga_enabled: Enable single-agent CUGA integration (from CUGA_SLACK_ENABLE env var)
+            multi_agent_runner: Pre-built ConfigurationRunner (takes precedence over cuga_agent)
         """
         self.notification = notification_channel
+        self._runner = multi_agent_runner
+        self.cuga_agent = None
+
+        if self._runner is not None:
+            logger.info("✅ CUGA Slack multi-agent runner active")
+            self.cuga_enabled = True
+            return
+
         self.cuga_enabled = (
             cuga_enabled
             if cuga_enabled is not None
             else os.getenv("CUGA_SLACK_ENABLE", "false").lower() == "true"
         )
-        self.cuga_agent = None
-        
+
         if self.cuga_enabled:
             try:
                 from cuga.sdk import CugaAgent
@@ -151,24 +161,25 @@ class SlackEventProcessor:
                 message_ts=response_thread_ts
             )
         
-        # Process with CUGA agent if enabled
-        if self.cuga_enabled and self.cuga_agent:
+        # Process with multi-agent runner or single CUGA agent
+        if self.cuga_enabled and (self._runner or self.cuga_agent):
             try:
-                logger.info(f"Invoking CUGA agent for message: {text[:50]}...")
-                
-                # Use thread_id from session context for conversation continuity
                 thread_id = session_context.thread_id or f"slack_{channel}_{user}"
-                
-                # Invoke CUGA agent
-                result = await self.cuga_agent.invoke(
-                    message=text,
-                    thread_id=thread_id,
-                    user_context=f"Slack user: {user}, Channel: {channel}"
-                )
-                
+
+                if self._runner is not None:
+                    logger.info(f"Invoking multi-agent runner for: {text[:50]}...")
+                    result = await self._runner.run(text, task_id=thread_id)
+                else:
+                    logger.info(f"Invoking CUGA agent for message: {text[:50]}...")
+                    result = await self.cuga_agent.invoke(
+                        message=text,
+                        thread_id=thread_id,
+                        user_context=f"Slack user: {user}, Channel: {channel}",
+                    )
+
                 response_text = result.answer
-                logger.info(f"CUGA agent response: {response_text[:100]}...")
-                
+                logger.info(f"CUGA response: {response_text[:100]}...")
+
             except Exception as e:
                 logger.error(f"Error invoking CUGA agent: {e}", exc_info=True)
                 response_text = (

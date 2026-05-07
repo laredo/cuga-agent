@@ -1,0 +1,51 @@
+[configuration]
+name    = "test_pipeline"
+pattern = "pipeline"
+
+[[agents]]
+id           = "planner"
+type         = "cuga_lite"
+domain       = "planning"
+role         = "entry"
+instructions = "Decompose the request into subtasks."
+max_steps    = 10
+
+[[agents]]
+id           = "researcher"
+type         = "cuga_lite"
+domain       = "research"
+role         = "worker"
+instructions = "Research the topic thoroughly."
+apps         = ["web_search"]
+max_steps    = 15
+
+  [agents.model]
+  provider    = "openai"
+  name        = "gpt-4o"
+  temperature = 0.1
+
+  [agents.skills]
+  enabled = true
+  allowed = ["web_research"]
+
+  [[agents.policies]]
+  type   = "output_formatter"
+  name   = "Structured findings"
+  format = "Return findings as a numbered list with citations."
+
+[[agents]]
+id           = "writer"
+type         = "cuga_lite"
+domain       = "writing"
+role         = "exit"
+instructions = "Synthesise findings into a concise final response."
+
+[[edges]]
+from = "planner"
+to   = "researcher"
+mode = "one_way"
+
+[[edges]]
+from = "researcher"
+to   = "writer"
+mode = "one_way"

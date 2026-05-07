@@ -1,0 +1,24 @@
+[configuration]
+name    = "test_peer_to_peer"
+pattern = "peer_to_peer"
+
+[[agents]]
+id           = "researcher"
+type         = "cuga_lite"
+domain       = "research"
+role         = "entry"
+instructions = "Research the topic and collaborate with the fact checker."
+peers        = ["fact_checker"]
+
+[[agents]]
+id           = "fact_checker"
+type         = "cuga_lite"
+domain       = "verification"
+role         = "exit"
+instructions = "Verify claims made by the researcher."
+peers        = ["researcher"]
+
+[[edges]]
+from = "researcher"
+to   = "fact_checker"
+mode = "peer_to_peer"

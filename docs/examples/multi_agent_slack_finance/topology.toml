@@ -1,0 +1,78 @@
+# Multi-agent configuration: Slack ↔ Finance Quote pipeline
+#
+# Flow:
+#   User sends stock/crypto query in Slack
+#     → slack_agent extracts and formats the request
+#       → quote_agent calls cuga-finance MCP for live market data
+#         → result flows back to slack_agent → Slack
+#
+# Activate:
+#   export CUGA_SLACK_MULTI_AGENT_CONFIG=docs/examples/multi_agent_slack_finance/topology.toml
+
+[configuration]
+name    = "slack_finance_quotes"
+pattern = "peer_to_peer"
+
+# ---------------------------------------------------------------------------
+# Slack interface agent — entry point for all Slack messages
+# ---------------------------------------------------------------------------
+
+[[agents]]
+id     = "slack_agent"
+type   = "cuga_lite"
+domain = "slack_interface"
+role   = "entry"
+peers  = ["quote_agent"]
+instructions = """
+You are the Slack interface for a financial data service.
+
+Your responsibilities:
+1. Parse the user's message and identify what stock or cryptocurrency they are
+   asking about. Look for ticker symbols (AAPL, BTC, ETH) or company/coin names
+   (Apple, Bitcoin, Ethereum).
+2. Output a clean, structured request to the quote agent in the form:
+     QUOTE REQUEST: <TICKER_OR_NAME>
+   If the user asks for multiple symbols, list them each on a separate line.
+3. If the message is not a finance query, reply directly without involving
+   the quote agent.
+
+Keep your output brief — the quote agent handles the data lookup.
+"""
+
+# ---------------------------------------------------------------------------
+# Quote agent — calls cuga-finance MCP for live market data
+# ---------------------------------------------------------------------------
+
+[[agents]]
+id     = "quote_agent"
+type   = "cuga_lite"
+domain = "finance"
+role   = "exit"
+peers  = ["slack_agent"]
+instructions = """
+You are a financial data agent with access to the cuga-finance tools.
+
+Given a QUOTE REQUEST from the slack_agent:
+1. Use the cuga-finance MCP tools to fetch the current price, 24-hour change,
+   volume, and market cap (where available) for each requested security.
+2. Format the response for Slack using Markdown:
+   - Use bold for the ticker symbol and current price.
+   - Include the 24h change with a ↑ (green) or ↓ (red) indicator.
+   - Summarise in 2-3 lines per symbol — be concise.
+3. If a symbol is not found, say so clearly.
+
+Always use live data from the tools, never invent prices.
+"""
+
+  [[agents.mcp_servers]]
+  name = "cuga-finance"
+  url  = "https://cuga-apps-mcp-finance.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
+
+# ---------------------------------------------------------------------------
+# Edges
+# ---------------------------------------------------------------------------
+
+[[edges]]
+from = "slack_agent"
+to   = "quote_agent"
+mode = "peer_to_peer"

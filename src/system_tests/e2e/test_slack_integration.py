@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
     logger.info("✅ Event queue started")
     
     # Initialize Slack integration
-    if initialize_slack(test_app_state.event_queue):
+    if await initialize_slack(test_app_state.event_queue):
         slack_processor = get_slack_processor()
         if slack_processor:
             # Register Slack processor with the event processor

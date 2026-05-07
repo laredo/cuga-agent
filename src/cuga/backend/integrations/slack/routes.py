@@ -24,12 +24,33 @@ slack_processor: Optional[SlackEventProcessor] = None
 event_queue: Optional[EventQueue] = None
 
 
-def initialize_slack(queue: EventQueue) -> bool:
+async def _build_multi_agent_runner():
+    """Return a ConfigurationRunner if CUGA_SLACK_MULTI_AGENT_CONFIG is set, else None."""
+    config_path = os.getenv("CUGA_SLACK_MULTI_AGENT_CONFIG")
+    if not config_path:
+        return None
+    try:
+        from cuga.backend.multi_agent.config import load_config
+        from cuga.backend.multi_agent.agent_factory import AgentFactory
+        from cuga.backend.multi_agent.runner import ConfigurationRunner
+
+        cfg = load_config(config_path)
+        factory = AgentFactory(cfg)
+        await factory.__aenter__()
+        runner = ConfigurationRunner(cfg, agents=factory.agents)
+        logger.info(f"✅ Multi-agent runner loaded from {config_path}")
+        return runner
+    except Exception as e:
+        logger.error(f"Failed to build multi-agent runner from {config_path}: {e}")
+        return None
+
+
+async def initialize_slack(queue: EventQueue) -> bool:
     """Initialize Slack integration components
-    
+
     Args:
         queue: Event queue for enqueueing events
-        
+
     Returns:
         True if initialization successful, False otherwise
     """
@@ -52,9 +73,11 @@ def initialize_slack(queue: EventQueue) -> bool:
         )
         slack_handler = SlackEventHandler(slack_client)
         slack_notification = SlackNotificationChannel(slack_client)
-        slack_processor = SlackEventProcessor(slack_notification)
+
+        runner = await _build_multi_agent_runner()
+        slack_processor = SlackEventProcessor(slack_notification, multi_agent_runner=runner)
         event_queue = queue
-        
+
         logger.info("✅ Slack integration initialized")
         return True
     except Exception as e:
