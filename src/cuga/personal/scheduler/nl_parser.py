@@ -15,9 +15,28 @@ _DAYS: dict[str, int] = {
 
 _DAY_NUM_TO_NAME: dict[int, str] = {v: k.capitalize() for k, v in _DAYS.items()}
 
-_KNOWN_SKILLS = ["bulletin", "timesheet", "calculator", "knowledge-store"]
+_KNOWN_SKILLS = ["bulletin", "timesheet", "calculator", "knowledge-store", "channel-digest"]
 
-_SCHEDULE_KEYWORDS = {"every ", "daily", "weekly", "schedule", "remind me", "each "}
+# Keyword phrases that unambiguously indicate a specific skill, checked before literal name matching
+_SKILL_KEYWORDS: dict[str, list[str]] = {
+    "channel-digest": [
+        "summarize this channel",
+        "summarize the channel",
+        "digest this channel",
+        "digest the channel",
+        "store channel history",
+        "channel summary",
+        "channel digest",
+    ],
+    "bulletin": [
+        "customer bulletin",
+        "product bulletin",
+        "weekly bulletin",
+        "draft bulletin",
+    ],
+}
+
+_SCHEDULE_KEYWORDS = {"every ", "daily", "weekly", "schedule", "remind me", "each ", "set a daily", "set a weekly"}
 
 
 def is_schedule_request(text: str) -> bool:
@@ -35,10 +54,16 @@ def parse_schedule(text: str, default_skill: str = "bulletin") -> Optional[dict]
     t = text.lower()
 
     skill_name = default_skill
-    for s in _KNOWN_SKILLS:
-        if s in t:
-            skill_name = s
+    # Check keyword phrases first (more reliable than literal skill name matching)
+    for skill, phrases in _SKILL_KEYWORDS.items():
+        if any(phrase in t for phrase in phrases):
+            skill_name = skill
             break
+    else:
+        for s in _KNOWN_SKILLS:
+            if s in t:
+                skill_name = s
+                break
 
     day_num: Optional[int] = None
     for day, num in _DAYS.items():
@@ -107,7 +132,10 @@ def _fmt_hour(hour: int, minute: int = 0) -> str:
     return f"{h12}{suffix}"
 
 
-def _build_prompt(skill_name: str) -> str:
+def _build_prompt(skill_name: str, channel_id: str = "", channel_name: str = "") -> str:
+    if skill_name == "channel-digest":
+        ctx = f"[channel: {channel_id} name: {channel_name}] " if channel_id else ""
+        return f"{ctx}Summarize yesterday's messages and store in knowledge. lookback_days=1"
     prompts = {
         "bulletin": "Draft a customer bulletin from what we shipped this week.",
         "timesheet": "Fill my timesheet for this week.",

@@ -25,10 +25,13 @@ class Session:
         if self._agent is None:
             from cuga import CugaAgent
 
+            from cuga.personal.tools.channel_history import get_channel_history_tools
             from cuga.personal.tools.knowledge import get_knowledge_tools
             from cuga.personal.tools.web_search import get_web_search_tools
 
-            self._agent = CugaAgent(tools=get_knowledge_tools() + get_web_search_tools())
+            self._agent = CugaAgent(
+                tools=get_knowledge_tools() + get_web_search_tools() + get_channel_history_tools()
+            )
         return self._agent
 
 

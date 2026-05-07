@@ -84,16 +84,20 @@ class SchedulerEngine:
             await self._skill_loader.activate(skill, agent)
             result = await agent.invoke(job.prompt, thread_id=session.thread_id)
 
-            # Store as pending approval so the next "approve" message posts it
-            session.pending_approval = result.answer
             session.active_skill = job.skill_name
 
-            approval_prompt = (
-                f"{result.answer}\n\n"
-                f"---\n"
-                f"Reply **approve** to post to #product-updates, or **discard** to cancel."
-            )
-            await self._gateway.send(target=job.delivery, text=approval_prompt)
+            needs_approval = skill.metadata.enterprise.get("approval_required", False)
+            if needs_approval:
+                session.pending_approval = result.answer
+                output = (
+                    f"{result.answer}\n\n"
+                    f"---\n"
+                    f"Reply **approve** to post to #product-updates, or **discard** to cancel."
+                )
+            else:
+                output = result.answer
+
+            await self._gateway.send(target=job.delivery, text=output)
 
             job.runs_completed += 1
             job.last_run = datetime.now(timezone.utc)

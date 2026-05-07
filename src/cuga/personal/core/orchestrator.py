@@ -91,7 +91,12 @@ class PersonalAgentOrchestrator:
             session.active_skill = skill.metadata.name
             await self._skill_loader.activate(skill, agent)
 
-        result = await agent.invoke(event.text, thread_id=session.thread_id)
+        # Inject channel context for the digest skill so the tool knows which channel to fetch
+        agent_text = event.text
+        if skill and skill.metadata.name == "channel-digest":
+            agent_text = f"[channel: {event.channel_id} name: {event.channel_id}] {event.text}"
+
+        result = await agent.invoke(agent_text, thread_id=session.thread_id)
 
         # Check if the agent produced a bulletin draft that needs approval
         if skill and skill.metadata.name == "bulletin" and _looks_like_draft(result.answer):
@@ -132,6 +137,15 @@ class PersonalAgentOrchestrator:
         parsed = parse_schedule(event.text)
         if not parsed:
             return None
+
+        # For channel-digest, rebuild the prompt with the originating channel context
+        if parsed["skill_name"] == "channel-digest":
+            from cuga.personal.scheduler.nl_parser import _build_prompt
+            parsed["prompt"] = _build_prompt(
+                "channel-digest",
+                channel_id=event.channel_id,
+                channel_name=event.channel_id,
+            )
 
         job = ScheduledJob(
             id=str(uuid.uuid4()),
