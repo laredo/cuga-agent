@@ -120,7 +120,7 @@ _PATTERNS_REQUIRING_EXIT = {"pipeline", "peer_to_peer", "hybrid"}
 
 class MultiAgentConfig(BaseModel):
     name: str
-    pattern: Literal["pipeline", "supervisor", "peer_to_peer", "hybrid"]
+    pattern: Literal["pipeline", "supervisor", "peer_to_peer", "hybrid", "swarm"]
     agents: List[AgentConfig]
     edges: List[EdgeConfig] = []
     sub_configurations: List[SubConfigurationConfig] = []

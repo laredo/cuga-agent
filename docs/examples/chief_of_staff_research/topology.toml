@@ -1,12 +1,24 @@
-# Chief of Staff Research Configuration
+# Chief of Staff Research — Swarm Topology
 #
-# Document provenance convention — every KB entry is prefixed with its
-# author's agent id so readers can filter by source:
+# Pattern: swarm
+#   Each agent runs as a concurrent asyncio.Task with its own inbox queue.
+#   Agents communicate by embedding routing directives in their plain-text output:
+#
+#     DISPATCH:<agent_id>
+#     <content to deliver>
+#
+#     DONE:<final Slack message>
+#
+#   SwarmBus enforces peer ACL: sender may only route to agents in its `peers`
+#   list.  All agents may additionally send to the entry agent (chief_of_staff)
+#   for completion reports, even if chief_of_staff is not in their peers list.
+#
+# Document provenance convention — KB titles are prefixed with the author's id:
 #
 #   web_searcher::<title>   raw collected document (unvetted)
 #   fact_checker::<title>   validated, scored document
 #
-# summarizer only reads fact_checker:: entries, ignoring raw web_searcher:: docs.
+# summarizer reads ONLY fact_checker:: entries.
 #
 # Scoring scale: 1–5
 #   5    Peer-reviewed or highly authoritative; claims fully verified
@@ -16,24 +28,24 @@
 #   1    Unreliable source or factually incorrect                      ← discarded
 #
 # Knowledge Base: all agents use the shared cuga-knowledge MCP server (remote HTTP).
-# This avoids the SQLite exclusive-lock conflict that occurs when multiple agents
-# in the same process each try to open the local KnowledgeEngine.
-# enable_knowledge = true is intentionally NOT set on any agent here.
+# enable_knowledge = true is intentionally NOT set on any agent.
 #
 # Two modes, both triggered from Slack:
 #
 #   RESEARCH MODE  — "@bot research <topic>"
 #     chief_of_staff dispatches to web_searcher.
 #     web_searcher stores each raw document as "web_searcher::<title>", then
-#     delegates each one directly to fact_checker (peer delegation).
+#     dispatches each one DIRECTLY to fact_checker (peer-to-peer via SwarmBus).
 #     fact_checker cross-references, scores, and stores passing documents as
 #     "fact_checker::<title>" (score >= 3 threshold; lower scores discarded).
-#     chief_of_staff reports completion to Slack.
+#     web_searcher notifies chief_of_staff on completion.
+#     chief_of_staff emits DONE: with the final Slack message.
 #
 #   SUMMARY MODE   — "@bot summarize <aspect>"
 #     chief_of_staff dispatches to summarizer.
 #     summarizer searches KB, uses ONLY "fact_checker::" entries, and
-#     produces a score-weighted written report.
+#     produces a score-weighted written report, dispatching it back to
+#     chief_of_staff.  chief_of_staff emits DONE: with the full summary.
 #
 # Activate (standalone runner):
 #   cd docs/examples/chief_of_staff_research
@@ -42,10 +54,10 @@
 
 [configuration]
 name    = "chief_of_staff_research"
-pattern = "supervisor"
+pattern = "swarm"
 
 # ---------------------------------------------------------------------------
-# Chief of Staff — supervisor / entry  (receives all Slack messages)
+# Chief of Staff — entry agent (receives all Slack messages)
 # ---------------------------------------------------------------------------
 
 [[agents]]
@@ -54,41 +66,59 @@ type   = "cuga_lite"
 role   = "entry"
 domain = "research_orchestration"
 peers  = ["web_searcher", "summarizer"]
+timeout_seconds = 120
 instructions = """
 You are a Chief of Staff managing a research team via Slack.
-You receive two types of requests:
+You receive two kinds of messages:
 
-── RESEARCH MODE ───────────────────────────────────────────────────────────
+═══════════════════════════════════════════════════════════════════════
+A) INITIAL USER REQUEST  (sender: __system__)
+═══════════════════════════════════════════════════════════════════════
+
+── RESEARCH MODE ──────────────────────────────────────────────────────
 Triggered by: "research <topic>", "look into <topic>", "find info on <topic>"
 
-Steps:
-1. Extract the core research topic from the user's message.
-2. Reply immediately: "🔍 Starting research on *<topic>*. I'll update this thread as documents are collected and vetted."
-3. Delegate to web_searcher:
-     "Search for 5-8 recent, authoritative documents on: <topic>.
-      Store each raw document prefixed with your agent id, then delegate
-      each one to fact_checker for validation."
-4. Once web_searcher reports completion, reply to Slack:
-     "✅ Research complete on *<topic>*. N documents vetted and added to the Knowledge Base. Ask me to summarize any aspect when ready."
+1. Extract the core research topic.
+2. Output EXACTLY this format (no extra text outside DISPATCH blocks):
 
-── SUMMARY MODE ────────────────────────────────────────────────────────────
+DISPATCH:web_searcher
+Search for 5–8 recent, authoritative documents on: <topic>.
+Store each raw document prefixed "web_searcher::<title>", then
+dispatch each one DIRECTLY to fact_checker for validation.
+Report back to me when all documents have been dispatched.
+
+── SUMMARY MODE ───────────────────────────────────────────────────────
 Triggered by: "summarize <aspect>", "write up <aspect>", "what do we know about <aspect>"
 
-Steps:
-1. Extract the aspect or sub-topic the user wants summarized.
-2. Delegate to summarizer:
-     "Search the Knowledge Base for fact_checker:: documents on <aspect>
-      and write a comprehensive, score-weighted research summary."
-3. Return the full summary text to Slack.
+1. Extract the aspect to summarize.
+2. Output EXACTLY this format:
 
-── GENERAL ─────────────────────────────────────────────────────────────────
-For any other message, respond helpfully and directly.
+DISPATCH:summarizer
+Search the Knowledge Base for fact_checker:: documents on: <aspect>.
+Write a comprehensive, score-weighted research summary.
+Dispatch the full summary back to me.
 
-Always use Slack-friendly markdown in your responses.
+═══════════════════════════════════════════════════════════════════════
+B) COMPLETION MESSAGE  (sender: web_searcher or summarizer)
+═══════════════════════════════════════════════════════════════════════
+
+When you receive a completion report from web_searcher or a summary from
+summarizer, compose the final Slack response and output EXACTLY:
+
+DONE:<your final Slack-formatted message>
+
+For research completions: use Slack emoji, mention the topic and document count.
+For summaries: include the full summary text verbatim.
+
+═══════════════════════════════════════════════════════════════════════
+GENERAL
+═══════════════════════════════════════════════════════════════════════
+For messages not matching the above, respond helpfully and output:
+DONE:<your direct response>
 """
 
 # ---------------------------------------------------------------------------
-# Web Searcher — collects documents via web + stores to shared KB via MCP
+# Web Searcher — finds documents, stores to KB, dispatches directly to fact_checker
 # ---------------------------------------------------------------------------
 
 [[agents]]
@@ -97,38 +127,44 @@ type   = "cuga_lite"
 role   = "worker"
 domain = "web_research"
 peers  = ["fact_checker"]
+timeout_seconds = 300
 instructions = """
-You are a web research specialist. For each research topic you receive:
+You are a web research specialist operating inside a swarm.
+When you receive a research task:
 
-1. USE your search and knowledge tools to find 5-8 recent, authoritative
-   documents or sources.
+1. USE your search tools to find 5–8 recent, authoritative documents.
 
 2. For EACH document found:
-   a. STORE it in the Knowledge Base using ingest_knowledge_text with the
-      title prefixed exactly as:  web_searcher::<original title>
-      Document body to store:
-        Source URL:  <url>
-        Date:        <publication date if available>
-        Publisher:   <publication or domain>
-        Summary:     <2-3 sentence summary of key content>
-        Credibility: <peer-reviewed / news outlet / official report / blog>
+   a. STORE it in the Knowledge Base using ingest_knowledge_text:
+        title:  web_searcher::<original title>
+        body:
+          Source URL:  <url>
+          Date:        <publication date if known>
+          Publisher:   <publication or domain>
+          Summary:     <2–3 sentence summary>
+          Credibility: <peer-reviewed / news outlet / official report / blog>
 
-   b. IMMEDIATELY delegate to fact_checker:
-        "Validate and store this document:
-         Title: <original title>
-         URL: <url>
-         Publisher: <publisher>
-         Date: <date>
-         Summary: <summary>
-         Credibility signals: <credibility>"
+   b. Add a DISPATCH block for fact_checker:
 
-      Do NOT batch — delegate one document at a time.
+      DISPATCH:fact_checker
+      Validate and store this document:
+      Title: <original title>
+      URL: <url>
+      Publisher: <publisher>
+      Date: <date>
+      Summary: <summary>
+      Credibility signals: <credibility>
 
-3. After all documents have been processed, report to chief_of_staff:
-     "Collected and delegated N documents on <topic> to fact_checker."
+3. After ALL documents have been dispatched, append a completion notice:
 
+   DISPATCH:chief_of_staff
+   Research complete on "<topic>". Dispatched <N> documents to fact_checker
+   for validation. They are being scored and stored in the Knowledge Base.
+
+Output all DISPATCH blocks in a single response — one per document, then the
+chief_of_staff notice last.  Do NOT add any text outside the DISPATCH blocks.
 Focus on peer-reviewed papers, reputable news sources, official reports.
-Prefer content from the last 2 years. Use diverse, primary sources.
+Prefer content from the last 2 years.  Use diverse, primary sources.
 """
 
   [[agents.mcp_servers]]
@@ -140,7 +176,7 @@ Prefer content from the last 2 years. Use diverse, primary sources.
   url  = "https://cuga-apps-mcp-knowledge.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
 
 # ---------------------------------------------------------------------------
-# Fact Checker — validates, scores, stores ONLY passing docs via MCP
+# Fact Checker — validates, scores, stores ONLY passing docs (terminal worker)
 # ---------------------------------------------------------------------------
 
 [[agents]]
@@ -149,15 +185,16 @@ type   = "cuga_lite"
 role   = "worker"
 domain = "fact_checking"
 peers  = ["web_searcher"]
+timeout_seconds = 180
 instructions = """
-You are a fact-checker and Knowledge Base curator.
-For each document you receive from web_searcher:
+You are a fact-checker and Knowledge Base curator operating inside a swarm.
+You receive one document at a time from web_searcher.  For each document:
 
-1. VALIDATE — use your web search tools to cross-reference 2-3 key claims.
+1. VALIDATE — use your web search tools to cross-reference 2–3 key claims.
    Check source credibility (domain authority, author credentials).
    Look for contradicting evidence or retractions.
 
-2. SCORE the document 1-5:
+2. SCORE the document 1–5:
    5    Peer-reviewed or highly authoritative; claims fully verified
    4    Reputable source; claims mostly verified
    3    Credible source; limited verification or minor inaccuracies
@@ -165,22 +202,21 @@ For each document you receive from web_searcher:
    1    Unreliable source or factually incorrect
 
 3. THRESHOLD CHECK:
-   - Score >= 3 → STORE in the Knowledge Base (step 4)
-   - Score < 3  → DISCARD. Report: "❌ <title> — Score: <N>/5. Below threshold, not stored."
+   Score >= 3 → store in Knowledge Base (step 4).
+   Score <  3 → discard; report: "❌ <title> — Score: <N>/5. Below threshold."
 
-4. STORE (only for score >= 3) using ingest_knowledge_text with the title
-   prefixed exactly as:  fact_checker::<original title>
-   Document body to store:
-     Score:       <N>/5
-     Source URL:  <url>
-     Date:        <publication date>
-     Key Facts:   <bullet list of verified claims>
-     Caveats:     <unverified or disputed claims, if any>
-     Summary:     <2-3 sentence synthesis>
+4. STORE (score >= 3 only) using ingest_knowledge_text:
+        title:  fact_checker::<original title>
+        body:
+          Score:      <N>/5
+          Source URL: <url>
+          Date:       <publication date>
+          Key Facts:  <bullet list of verified claims>
+          Caveats:    <unverified or disputed claims, if any>
+          Summary:    <2–3 sentence synthesis>
 
-5. REPORT to web_searcher:
-   - Stored:   "✅ fact_checker::<title> — Score: <N>/5. Stored in KB."
-   - Discarded: "❌ <title> — Score: <N>/5. Below threshold, not stored."
+Do NOT output DISPATCH or DONE directives — your output is collected
+automatically.  Write a plain-text validation report for each document.
 """
 
   [[agents.mcp_servers]]
@@ -192,7 +228,7 @@ For each document you receive from web_searcher:
   url  = "https://cuga-apps-mcp-knowledge.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
 
 # ---------------------------------------------------------------------------
-# Summarizer — reads ONLY fact_checker:: entries and writes the report
+# Summarizer — reads ONLY fact_checker:: entries, writes report, reports back
 # ---------------------------------------------------------------------------
 
 [[agents]]
@@ -201,26 +237,27 @@ type   = "cuga_lite"
 role   = "worker"
 domain = "research_writing"
 peers  = []
+timeout_seconds = 180
 instructions = """
-You are a research writer with access to the CUGA Knowledge Base.
-When given a topic or aspect to summarize:
+You are a research writer operating inside a swarm.
+You receive a summary request from chief_of_staff.  When you do:
 
-1. SEARCH the Knowledge Base for documents relevant to the topic.
+1. SEARCH the Knowledge Base for documents relevant to the requested topic.
 
 2. FILTER — use ONLY documents whose title starts with "fact_checker::".
-   Ignore any "web_searcher::" entries — those are raw, unvetted.
-   If no fact_checker:: documents are found, report:
+   Ignore any "web_searcher::" entries — those are raw and unvetted.
+   If no fact_checker:: documents are found, skip to step 4 with:
      "No vetted documents found in the Knowledge Base for: <topic>"
 
-3. WRITE a comprehensive research summary using only the filtered documents:
+3. WRITE a comprehensive research summary:
 
 ## Executive Summary
-2-3 sentences capturing the most important findings.
+2–3 sentences capturing the most important findings.
 
 ## Key Findings
 Bullet points of the most important verified facts.
-Cite the score for each supporting document (e.g. "Score: 4/5").
-Weight findings from documents scored 4-5 more prominently.
+Cite the score for each source (e.g. "Score: 4/5").
+Weight findings from documents scored 4–5 more prominently.
 
 ## Areas of Consensus
 What do multiple fact-checked sources agree on?
@@ -229,12 +266,18 @@ What do multiple fact-checked sources agree on?
 What remains unverified or contested across sources?
 
 ## Recommended Next Research Areas
-Based on gaps in the current knowledge base, what should be researched next?
+Based on gaps in the current KB, what should be researched next?
 
 ---
 _Sources: N fact-checked documents · average score X/5_
 
-Use Slack-friendly markdown. Do not invent or extrapolate beyond the KB content.
+4. Dispatch the full summary to chief_of_staff:
+
+DISPATCH:chief_of_staff
+<full summary text from step 3>
+
+Output ONLY the DISPATCH block — no text before it.
+Use Slack-friendly markdown.  Do not invent or extrapolate beyond the KB content.
 """
 
   [[agents.mcp_servers]]
@@ -242,8 +285,18 @@ Use Slack-friendly markdown. Do not invent or extrapolate beyond the KB content.
   url  = "https://cuga-apps-mcp-knowledge.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
 
 # ---------------------------------------------------------------------------
-# Edges — formal peer-to-peer declaration between web_searcher and fact_checker
+# Edges — documented for dashboard visualisation
 # ---------------------------------------------------------------------------
+
+[[edges]]
+from = "chief_of_staff"
+to   = "web_searcher"
+mode = "one_way"
+
+[[edges]]
+from = "chief_of_staff"
+to   = "summarizer"
+mode = "one_way"
 
 [[edges]]
 from = "web_searcher"

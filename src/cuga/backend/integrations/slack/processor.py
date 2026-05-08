@@ -189,7 +189,7 @@ class SlackEventProcessor:
                 logger.info(f"CUGA response: {response_text[:100]}...")
 
             except Exception as e:
-                logger.error(f"Error invoking CUGA agent: {e}", exc_info=True)
+                logger.exception(f"Error invoking CUGA agent: {e}")
                 response_text = (
                     f"❌ Sorry, I encountered an error processing your request:\n"
                     f"```{str(e)}```\n\n"

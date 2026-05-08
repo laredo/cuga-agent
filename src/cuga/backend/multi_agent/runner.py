@@ -9,6 +9,7 @@ from cuga.backend.multi_agent.config import MultiAgentConfig
 from cuga.backend.multi_agent.patterns.pipeline import RunResult, run_pipeline
 from cuga.backend.multi_agent.patterns.peer_to_peer import run_peer_to_peer
 from cuga.backend.multi_agent.patterns.supervisor import run_supervisor
+from cuga.backend.multi_agent.patterns.swarm import run_swarm
 from cuga.backend.multi_agent.task_state import TaskState
 from cuga.backend.skills.loader import discover_skills
 
@@ -62,6 +63,16 @@ class ConfigurationRunner:
 
         if pattern == "supervisor":
             return await run_supervisor(
+                config=self._config,
+                agents=self._agents,
+                request=request,
+                task_id=task_id,
+                task_state=task_state,
+                callbacks=self._callbacks or None,
+            )
+
+        if pattern == "swarm":
+            return await run_swarm(
                 config=self._config,
                 agents=self._agents,
                 request=request,
