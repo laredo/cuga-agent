@@ -92,6 +92,7 @@ class CodeExecutor:
         thread_id: Optional[str] = None,
         apps_list: Optional[List[str]] = None,
         mode: Optional[Literal['local', 'e2b', 'opensandbox']] = None,
+        timeout: int = 300,
     ) -> tuple[str, dict[str, Any]]:
         """Execute code with async tools available in the local namespace.
 
@@ -102,6 +103,8 @@ class CodeExecutor:
             thread_id: Thread ID for sandbox caching (optional)
             apps_list: List of app names for parsing tool names correctly (optional)
             mode: Execution mode ('local', 'e2b', or 'opensandbox'). If None, uses settings.
+            timeout: Execution timeout in seconds (default 300). Agent delegations that
+                     involve LLM calls need much longer than the previous 30-second default.
 
         Returns:
             Tuple of (execution result, new variables dictionary)
@@ -145,7 +148,7 @@ class CodeExecutor:
                 result = await executor.execute(
                     wrapped_code=wrapped_code,
                     context_locals=_locals,
-                    timeout=30,
+                    timeout=timeout,
                 )
 
         except Exception as e:

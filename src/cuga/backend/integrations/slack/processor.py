@@ -168,6 +168,14 @@ class SlackEventProcessor:
 
                 if self._runner is not None:
                     logger.info(f"Invoking multi-agent runner for: {text[:50]}...")
+                    # Post an immediate acknowledgement to the thread so the user
+                    # knows the swarm has picked up the request.
+                    if response_channel and response_thread_ts:
+                        await self.notification.send_response(
+                            text="_🤖 Swarm engaged — working on it, I'll post updates here as we go..._",
+                            channel=response_channel,
+                            thread_ts=response_thread_ts,
+                        )
                     result = await self._runner.run(text, task_id=thread_id)
                 else:
                     logger.info(f"Invoking CUGA agent for message: {text[:50]}...")
