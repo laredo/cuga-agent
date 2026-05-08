@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from cuga.backend.multi_agent.agent_bus import AgentBus
 from cuga.backend.multi_agent.config import MultiAgentConfig
@@ -18,9 +18,11 @@ class ConfigurationRunner:
         self,
         config: MultiAgentConfig,
         agents: Optional[Dict[str, Any]] = None,
+        callbacks: Optional[List[Any]] = None,
     ):
         self._config = config
         self._agents = agents or {}
+        self._callbacks = callbacks or []
         self._last_task_state: Optional[TaskState] = None
 
     # ------------------------------------------------------------------
@@ -65,6 +67,7 @@ class ConfigurationRunner:
                 request=request,
                 task_id=task_id,
                 task_state=task_state,
+                callbacks=self._callbacks or None,
             )
 
         if pattern == "peer_to_peer":

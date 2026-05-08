@@ -39,10 +39,40 @@ class AgentFactory:
 
         tools = await self._load_mcp_tools(agent_cfg.mcp_servers)
 
-        return CugaAgent(
+        agent = CugaAgent(
             tools=tools or None,
             special_instructions=agent_cfg.instructions,
+            enable_knowledge=agent_cfg.enable_knowledge,
         )
+
+        # Scope the KB to the topology name so every agent within this
+        # configuration shares one namespace and is isolated from other
+        # topologies.  We pre-set _knowledge_client before the lazy property
+        # fires so the auto-initialiser (which defaults to "cuga-default")
+        # is never reached.
+        if agent_cfg.enable_knowledge:
+            self._inject_kb_scope(agent)
+
+        return agent
+
+    def _inject_kb_scope(self, agent: Any) -> None:
+        """Pre-initialise the agent's KnowledgeClient with the topology name as scope."""
+        try:
+            from cuga.backend.knowledge.client import KnowledgeClient
+            from cuga.backend.knowledge.engine import KnowledgeEngine
+            from cuga.backend.knowledge.config import KnowledgeConfig
+            from cuga.config import settings
+
+            config = KnowledgeConfig.from_settings(settings)
+            engine = KnowledgeEngine(config)
+            agent._knowledge_client = KnowledgeClient(
+                engine, default_agent_id=self._config.name
+            )
+            logger.info(
+                f"KB scoped to topology '{self._config.name}' for agent"
+            )
+        except Exception as e:
+            logger.warning(f"Could not inject KB scope — falling back to default: {e}")
 
     async def _load_mcp_tools(
         self, mcp_servers: List["MCPServerConfig"]
