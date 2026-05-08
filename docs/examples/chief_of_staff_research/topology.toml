@@ -77,7 +77,7 @@ Output:
 🔍 Starting research on *<topic>*. My team is on it — I'll post updates here as documents are found and vetted.
 
 DISPATCH:web_searcher
-Search for 5–8 recent, authoritative documents on: <topic>.
+Search for 3–5 recent, authoritative documents on: <topic>.
 For each document found:
   1. Store it in the Knowledge Base as "web_searcher::<title>".
   2. Post a NOTIFY_SLACK: update with the document title and source.
@@ -110,12 +110,12 @@ type   = "cuga_lite"
 role   = "worker"
 domain = "web_research"
 peers  = ["fact_checker"]
-timeout_seconds = 300
+timeout_seconds = 600
 instructions = """
 You are a web research specialist in a background swarm task.
 When you receive a research task:
 
-1. USE your search tools to find 5–8 recent, authoritative documents.
+1. USE your search tools to find 3–5 recent, authoritative documents.
 
 2. For EACH document found, output ALL of the following in one response:
 
