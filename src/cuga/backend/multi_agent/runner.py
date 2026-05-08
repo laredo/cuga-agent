@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from cuga.backend.multi_agent.agent_bus import AgentBus
 from cuga.backend.multi_agent.config import MultiAgentConfig
@@ -12,6 +12,8 @@ from cuga.backend.multi_agent.patterns.supervisor import run_supervisor
 from cuga.backend.multi_agent.patterns.swarm import run_swarm
 from cuga.backend.multi_agent.task_state import TaskState
 from cuga.backend.skills.loader import discover_skills
+
+SlackPoster = Optional[Callable[[str], Coroutine[Any, Any, None]]]
 
 
 class ConfigurationRunner:
@@ -30,12 +32,17 @@ class ConfigurationRunner:
     # Public API
     # ------------------------------------------------------------------
 
-    async def run(self, request: str, task_id: str) -> RunResult:
+    async def run(
+        self,
+        request: str,
+        task_id: str,
+        slack_poster: SlackPoster = None,
+    ) -> RunResult:
         task_state = TaskState(task_id=task_id)
         self._last_task_state = task_state
 
         try:
-            result = await self._dispatch(request, task_id, task_state)
+            result = await self._dispatch(request, task_id, task_state, slack_poster)
         finally:
             task_state.complete()
 
@@ -57,7 +64,11 @@ class ConfigurationRunner:
     # ------------------------------------------------------------------
 
     async def _dispatch(
-        self, request: str, task_id: str, task_state: TaskState
+        self,
+        request: str,
+        task_id: str,
+        task_state: TaskState,
+        slack_poster: SlackPoster = None,
     ) -> RunResult:
         pattern = self._config.pattern
 
@@ -78,6 +89,7 @@ class ConfigurationRunner:
                 request=request,
                 task_id=task_id,
                 task_state=task_state,
+                slack_poster=slack_poster,
                 callbacks=self._callbacks or None,
             )
 
