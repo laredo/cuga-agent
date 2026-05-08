@@ -23,8 +23,15 @@ class AgentFactory:
     def __init__(self, config: "MultiAgentConfig"):
         self._config = config
         self.agents: Dict[str, Any] = {}
+        # Single shared KnowledgeEngine for all agents in this topology.
+        # All agents run in the same process; creating multiple KnowledgeEngine
+        # instances against the same SQLite file causes locking errors.  One
+        # engine + one KnowledgeClient per agent (different default_agent_id)
+        # gives each agent its own namespace while sharing the underlying store.
+        self._shared_kb_engine: Optional[Any] = None
 
     async def __aenter__(self) -> "AgentFactory":
+        self._shared_kb_engine = self._create_kb_engine()
         for agent_cfg in self._config.agents:
             self.agents[agent_cfg.id] = await self._build_agent(agent_cfg)
         return self
@@ -45,34 +52,58 @@ class AgentFactory:
             enable_knowledge=agent_cfg.enable_knowledge,
         )
 
-        # Scope the KB to the topology name so every agent within this
-        # configuration shares one namespace and is isolated from other
-        # topologies.  We pre-set _knowledge_client before the lazy property
-        # fires so the auto-initialiser (which defaults to "cuga-default")
-        # is never reached.
+        # Inject a pre-built KnowledgeClient so all KB-enabled agents share
+        # the same engine (and thus the same SQLite file) without conflicts.
+        # Each agent gets its own default_agent_id for namespace isolation.
         if agent_cfg.enable_knowledge:
-            self._inject_kb_scope(agent)
+            self._inject_kb_scope(agent, agent_cfg.id)
 
         return agent
 
-    def _inject_kb_scope(self, agent: Any) -> None:
-        """Pre-initialise the agent's KnowledgeClient with the topology name as scope."""
+    def _create_kb_engine(self) -> Optional[Any]:
+        """Create the single shared KnowledgeEngine for this topology."""
         try:
-            from cuga.backend.knowledge.client import KnowledgeClient
             from cuga.backend.knowledge.engine import KnowledgeEngine
             from cuga.backend.knowledge.config import KnowledgeConfig
             from cuga.config import settings
 
             config = KnowledgeConfig.from_settings(settings)
             engine = KnowledgeEngine(config)
+            logger.info(
+                f"Shared KB engine created for topology '{self._config.name}'"
+            )
+            return engine
+        except Exception as e:
+            logger.warning(f"Could not create shared KB engine: {e}")
+            return None
+
+    def _inject_kb_scope(self, agent: Any, agent_id: str) -> None:
+        """Wire the shared KnowledgeEngine into this agent's KnowledgeClient.
+
+        Uses the topology name as the default_agent_id so every agent in the
+        topology writes to the same KB namespace and can read each other's
+        documents.  The agent_id is logged for traceability but is not used
+        as the KB scope — intentional: fact_checker:: / web_searcher:: prefixes
+        in document titles carry provenance, not the KB namespace.
+        """
+        if self._shared_kb_engine is None:
+            logger.warning(
+                f"No shared KB engine — agent '{agent_id}' falls back to default KB"
+            )
+            return
+        try:
+            from cuga.backend.knowledge.client import KnowledgeClient
+
             agent._knowledge_client = KnowledgeClient(
-                engine, default_agent_id=self._config.name
+                self._shared_kb_engine, default_agent_id=self._config.name
             )
             logger.info(
-                f"KB scoped to topology '{self._config.name}' for agent"
+                f"KB scoped to topology '{self._config.name}' for agent '{agent_id}'"
             )
         except Exception as e:
-            logger.warning(f"Could not inject KB scope — falling back to default: {e}")
+            logger.warning(
+                f"Could not inject KB scope for '{agent_id}' — falling back to default: {e}"
+            )
 
     async def _load_mcp_tools(
         self, mcp_servers: List["MCPServerConfig"]

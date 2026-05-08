@@ -35,5 +35,5 @@ async def run_supervisor(
         description=entry_cfg.instructions,
         callbacks=callbacks,
     )
-    result = await supervisor.invoke(request, task_id=task_id)
+    result = await supervisor.invoke(request, thread_id=task_id)
     return RunResult(answer=result.answer, task_id=task_id)
