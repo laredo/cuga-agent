@@ -41,7 +41,7 @@ TOPOLOGY = Path(__file__).parent / "topology.toml"
 
 
 async def main():
-    from observability import setup_langfuse, setup_swarm_logging
+    from observability import setup_langfuse, setup_swarm_logging, ToolCallLoggingCallback
     from dashboard import start as start_dashboard
 
     from cuga.backend.multi_agent.config import load_config
@@ -58,8 +58,10 @@ async def main():
 
     # -- Observability -------------------------------------------------------
     setup_swarm_logging()
+    callbacks = [ToolCallLoggingCallback()]
     langfuse_handler = setup_langfuse()
-    callbacks = [langfuse_handler] if langfuse_handler else []
+    if langfuse_handler:
+        callbacks.append(langfuse_handler)
 
     # -- Topology ------------------------------------------------------------
     cfg = load_config(TOPOLOGY)

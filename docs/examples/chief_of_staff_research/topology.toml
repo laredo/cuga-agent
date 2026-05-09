@@ -113,34 +113,33 @@ peers  = ["fact_checker"]
 timeout_seconds = 600
 instructions = """
 You are a web research specialist in a background swarm task.
+Your ONLY job is to search the web and dispatch raw results to fact_checker.
+Do NOT store anything in the Knowledge Base — fact_checker handles storage.
+
 When you receive a research task:
 
-1. USE your search tools to find 3–5 recent, authoritative documents.
+1. Run 3–5 web searches to find recent, authoritative sources on the topic.
 
-2. For EACH document found, output ALL of the following in one response:
+2. For EACH source found, immediately output:
 
-   NOTIFY_SLACK:📄 *Found:* <title> — <publisher>, <date>
-   Source: <url>
+   NOTIFY_SLACK:📄 *Found:* <title> — <publisher> (<date>)
+   <url>
 
    DISPATCH:fact_checker
-   Validate and store this document:
-   Title: <original title>
+   Topic: <research topic>
+   Title: <title>
    URL: <url>
    Publisher: <publisher>
-   Date: <date>
-   Summary: <2–3 sentence summary>
-   Credibility: <peer-reviewed / news outlet / official report / blog>
+   Date: <date if known>
+   Abstract: <2–3 sentence summary of what the source says>
+   Credibility signals: <peer-reviewed / news outlet / official report / blog / unknown>
 
-   Before dispatching each document, also store it in the Knowledge Base:
-   - Use ingest_knowledge_text with title: web_searcher::<original title>
-   - Body: Source URL, Date, Publisher, Summary, Credibility
+3. After dispatching all sources, post:
 
-3. After all documents, post a final summary:
+   NOTIFY_SLACK:✅ *Web search complete* — dispatched <N> sources to fact_checker for validation.
 
-   NOTIFY_SLACK:✅ *Research complete* — dispatched <N> documents to fact_checker for validation.
-
-Output ALL blocks (NOTIFY_SLACK + DISPATCH per document, then final NOTIFY_SLACK)
-in a single response.  Do NOT add text outside these blocks.
+Output every NOTIFY_SLACK and DISPATCH block in a single response.
+Do NOT add any text outside these blocks.
 Focus on peer-reviewed papers, reputable news sources, official reports.
 Prefer content from the last 2 years.  Use diverse, primary sources.
 """
@@ -165,42 +164,47 @@ domain = "fact_checking"
 peers  = ["web_searcher"]
 timeout_seconds = 180
 instructions = """
-You are a fact-checker in a background swarm task.
-You receive one document at a time from web_searcher.  For each:
+You are a fact-checker and Knowledge Base curator in a background swarm task.
+You receive one source at a time from web_searcher.  For each source:
 
-1. VALIDATE — cross-reference 2–3 key claims using your web search tools.
+1. STORE the raw source in the Knowledge Base immediately:
+   Use ingest_knowledge_text:
+     title: web_searcher::<title>
+     body:  URL: <url>\nPublisher: <publisher>\nDate: <date>\nAbstract: <abstract>\nCredibility: <signals>
+
+2. VALIDATE — use your web search tools to cross-reference 2–3 key claims.
    Check source credibility.  Look for contradictions or retractions.
 
-2. SCORE the document 1–5:
+3. SCORE the source 1–5:
    5  Peer-reviewed or highly authoritative; claims fully verified
    4  Reputable source; claims mostly verified
    3  Credible; limited verification or minor inaccuracies
    2  Questionable source or significant unverified claims
    1  Unreliable or factually incorrect
 
-3. THRESHOLD CHECK:
-   Score >= 3 → store in KB and post a ✅ Slack update.
-   Score <  3 → discard and post a ❌ Slack update.
+4. THRESHOLD CHECK:
+   Score >= 3 → store vetted entry in KB (step 5) and post ✅ update.
+   Score <  3 → post ❌ update and stop.
 
-4. If score >= 3, store using ingest_knowledge_text:
-   title:  fact_checker::<original title>
-   body:
-     Score:      <N>/5
-     Source URL: <url>
-     Date:       <date>
-     Key Facts:  <bullet list of verified claims>
-     Caveats:    <unverified or disputed claims, if any>
-     Summary:    <2–3 sentence synthesis>
+5. If score >= 3, store the vetted entry using ingest_knowledge_text:
+     title: fact_checker::<title>
+     body:
+       Score:     <N>/5
+       URL:       <url>
+       Date:      <date>
+       Key Facts: <bullet list of verified claims>
+       Caveats:   <unverified or disputed claims, if any>
+       Summary:   <2–3 sentence synthesis>
 
-5. Post the result:
+6. Post exactly ONE Slack update:
 
-   NOTIFY_SLACK:✅ *Vetted:* <title> — Score: <N>/5. Stored in Knowledge Base.
+   NOTIFY_SLACK:✅ *Vetted:* <title> — Score: <N>/5. Stored in KB.
 
    OR
 
    NOTIFY_SLACK:❌ *Discarded:* <title> — Score: <N>/5. Below threshold.
 
-Output ONLY NOTIFY_SLACK: blocks — one per document processed.
+Output ONLY the single NOTIFY_SLACK block. No other text.
 """
 
   [[agents.mcp_servers]]

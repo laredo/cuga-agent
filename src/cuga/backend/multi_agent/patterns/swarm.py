@@ -174,6 +174,7 @@ async def _agent_task(
     first_response_queue: "asyncio.Queue[str]",
     slack_poster: Optional[SlackPoster],
     ensure_task: EnsureTask,
+    callbacks: Optional[List[Any]] = None,
 ) -> None:
     """Dequeue → invoke LLM → parse directives → spawn workers + route + post Slack."""
     first_response_sent = False
@@ -191,11 +192,14 @@ async def _agent_task(
         logger.info(f"[swarm:{agent_id}] ← {msg.sender!r} ({len(msg.content)} chars)")
 
         try:
+            invoke_config: Dict[str, Any] = {
+                "configurable": {"thread_id": f"{task_id}-{agent_id}"},
+                "tags": [agent_id],
+            }
+            if callbacks:
+                invoke_config["callbacks"] = callbacks
             result = await asyncio.wait_for(
-                agent.graph.ainvoke(
-                    _build_graph_state(msg.content),
-                    config={"configurable": {"thread_id": f"{task_id}-{agent_id}"}},
-                ),
+                agent.graph.ainvoke(_build_graph_state(msg.content), config=invoke_config),
                 timeout=float(timeout),
             )
         except asyncio.TimeoutError:
@@ -284,6 +288,7 @@ async def run_swarm(
                 first_response_queue=first_response_queue,
                 slack_poster=slack_poster,
                 ensure_task=ensure_task,
+                callbacks=callbacks or [],
             ),
             name=f"swarm-{task_id}-{agent_id}",
         )
