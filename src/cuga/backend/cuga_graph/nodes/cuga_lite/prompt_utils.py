@@ -94,6 +94,21 @@ class PromptUtils:
     """Utilities for creating prompts and finding tools."""
 
     @staticmethod
+    def _resolve_schema(args_schema: Any) -> dict:
+        """Resolve an args_schema to a plain dict regardless of its type.
+
+        Handles:
+          - Plain dict (MCP tools)
+          - Pydantic v2 BaseModel (model_json_schema)
+          - Pydantic v1 BaseModel (.schema())
+        """
+        if isinstance(args_schema, dict):
+            return args_schema
+        if hasattr(args_schema, 'model_json_schema'):
+            return args_schema.model_json_schema()
+        return args_schema.schema()
+
+    @staticmethod
     def get_tool_params_str(tool: StructuredTool) -> str:
         """Extract params_str (function signature format) for a tool.
 
@@ -105,7 +120,7 @@ class PromptUtils:
         """
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                schema = tool.args_schema.schema()
+                schema = ToolUtils._resolve_schema(tool.args_schema)
                 properties = schema.get('properties', {})
                 required = schema.get('required', [])
 
@@ -172,7 +187,7 @@ class PromptUtils:
 
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                schema = tool.args_schema.schema()
+                schema = ToolUtils._resolve_schema(tool.args_schema)
                 properties = schema.get('properties', {})
                 required = schema.get('required', [])
 

@@ -154,7 +154,7 @@ type   = "cuga_lite"
 role   = "worker"
 domain = "fact_checking"
 peers  = []
-timeout_seconds = 180
+timeout_seconds = 360
 instructions = """
 You are a fact-checker and Knowledge Base curator in a background swarm task.
 You receive one source at a time from web_searcher. For each source:
