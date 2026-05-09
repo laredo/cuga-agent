@@ -120,7 +120,7 @@ class PromptUtils:
         """
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                schema = ToolUtils._resolve_schema(tool.args_schema)
+                schema = PromptUtils._resolve_schema(tool.args_schema)
                 properties = schema.get('properties', {})
                 required = schema.get('required', [])
 
@@ -187,7 +187,7 @@ class PromptUtils:
 
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                schema = ToolUtils._resolve_schema(tool.args_schema)
+                schema = PromptUtils._resolve_schema(tool.args_schema)
                 properties = schema.get('properties', {})
                 required = schema.get('required', [])
 
