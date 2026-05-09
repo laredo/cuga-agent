@@ -22,10 +22,12 @@ class ConfigurationRunner:
         config: MultiAgentConfig,
         agents: Optional[Dict[str, Any]] = None,
         callbacks: Optional[List[Any]] = None,
+        agent_queues: Optional[Dict[str, Any]] = None,
     ):
         self._config = config
         self._agents = agents or {}
         self._callbacks = callbacks or []
+        self._agent_queues = agent_queues  # EventQueue per agent, required for swarm
         self._last_task_state: Optional[TaskState] = None
 
     # ------------------------------------------------------------------
@@ -52,11 +54,7 @@ class ConfigurationRunner:
         bus = AgentBus()
         for agent_cfg in self._config.agents:
             peers = agent_cfg.peers if agent_cfg.peers else []
-            bus.register(
-                agent_cfg.id,
-                _make_noop_handler(),
-                peers=peers if peers else [],
-            )
+            bus.register(agent_cfg.id, _make_noop_handler(), peers=peers)
         return bus
 
     # ------------------------------------------------------------------
@@ -89,6 +87,7 @@ class ConfigurationRunner:
                 request=request,
                 task_id=task_id,
                 task_state=task_state,
+                agent_queues=self._agent_queues,
                 slack_poster=slack_poster,
                 callbacks=self._callbacks or None,
             )

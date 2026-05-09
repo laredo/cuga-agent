@@ -1,24 +1,28 @@
 # Chief of Staff Research — Swarm Topology
 #
-# Pattern: swarm  (async, fire-and-forget background tasks)
+# Pattern: swarm  (async, event-queue-driven agent dispatch)
 #
-# Each agent runs as a concurrent asyncio.Task with its own inbox queue.
-# Agents embed directives in their plain-text output:
+# Each agent runs as a concurrent asyncio.Task with its own EventQueue inbox.
+# Inter-agent dispatch is done through real LangChain tool calls:
 #
-#   DISPATCH:<agent_id>
-#   <content to route to that agent's inbox>
+#   dispatch_to_<peer_id>(content="...")
 #
-#   NOTIFY_SLACK:<text to post to the Slack thread>
+# Calling this tool enqueues an Event(type=AGENT) into the peer's EventQueue
+# immediately — mid-run, inside the LangGraph ReAct loop — so fact_checker
+# tasks are spawned one per document as web_searcher finds them.
+#
+# Agents notify Slack by including NOTIFY_SLACK: directives in their plain-text
+# output.  These are parsed after graph.ainvoke() returns and posted via
+# slack_poster.
 #
 # SwarmBus ACL (from peers fields):
-#   sender may only DISPATCH to agents in its own peers list.
-#   Any agent may DISPATCH to the entry agent (chief_of_staff).
+#   Each agent only gets dispatch tools for agents in its own peers list.
 #
 # Lifecycle:
-#   chief_of_staff runs once per Slack message and returns an immediate ack.
-#   Workers (web_searcher, fact_checker, summarizer) fire-and-forget in the
-#   background, posting NOTIFY_SLACK: updates as they go.  No feedback loop
-#   back to chief_of_staff is needed.
+#   chief_of_staff runs once per Slack message; its plain-text output (non-
+#   NOTIFY_SLACK lines) becomes the immediate Slack ack.  It calls
+#   dispatch_to_web_searcher or dispatch_to_summarizer via tool call.
+#   Workers fire-and-forget in the background, posting NOTIFY_SLACK: updates.
 #
 # Document provenance convention (KB title prefixes):
 #   web_searcher::<title>   raw collected document (unvetted)
@@ -34,12 +38,12 @@
 # Two modes (both triggered from Slack):
 #
 #   RESEARCH MODE  "@bot research <topic>"
-#     chief_of_staff → ack immediately → DISPATCH:web_searcher
-#     web_searcher searches, stores each doc, NOTIFY_SLACK: progress, DISPATCH:fact_checker per doc
-#     fact_checker validates each doc, NOTIFY_SLACK: result
+#     chief_of_staff → ack immediately → dispatch_to_web_searcher(content=task)
+#     web_searcher searches, for each doc calls dispatch_to_fact_checker(content=doc)
+#     fact_checker validates each doc, NOTIFY_SLACK: result, stores to KB
 #
 #   SUMMARY MODE   "@bot summarize <aspect>"
-#     chief_of_staff → ack immediately → DISPATCH:summarizer
+#     chief_of_staff → ack immediately → dispatch_to_summarizer(content=request)
 #     summarizer reads KB (fact_checker:: only), NOTIFY_SLACK: full report
 #
 # Activate:
@@ -53,7 +57,8 @@ pattern = "swarm"
 
 # ---------------------------------------------------------------------------
 # Chief of Staff — entry agent
-# Runs ONCE per Slack message; its text output is the immediate Slack ack.
+# Runs ONCE per Slack message; its plain-text output is the immediate Slack ack.
+# Uses dispatch_to_web_searcher and dispatch_to_summarizer tool calls.
 # ---------------------------------------------------------------------------
 
 [[agents]]
@@ -64,44 +69,41 @@ domain = "research_orchestration"
 peers  = ["web_searcher", "summarizer"]
 timeout_seconds = 60
 instructions = """
-You are a Chief of Staff managing a research team.  You receive Slack messages
+You are a Chief of Staff managing a research team. You receive Slack messages
 and must respond IMMEDIATELY with a short acknowledgement, then dispatch the
-work to your team in the background.
+work to your team using your dispatch tools.
 
-Your output MUST follow this structure (plain text first, then DISPATCH blocks):
+You have two dispatch tools available:
+  - dispatch_to_web_searcher(content="...") — send a research task to the web searcher
+  - dispatch_to_summarizer(content="...") — send a summary request to the summarizer
 
 ── RESEARCH MODE ─────────────────────────────────────────────────────────────
 Triggered by: "research <topic>", "look into <topic>", "find info on <topic>"
 
-Output:
-🔍 Starting research on *<topic>*. My team is on it — I'll post updates here as documents are found and vetted.
-
-DISPATCH:web_searcher
-Search for 3–5 recent, authoritative documents on: <topic>.
-For each document found:
-  1. Store it in the Knowledge Base as "web_searcher::<title>".
-  2. Post a NOTIFY_SLACK: update with the document title and source.
-  3. DISPATCH it to fact_checker for validation.
-After all documents are dispatched, post a NOTIFY_SLACK: completion summary.
+Steps:
+1. Call dispatch_to_web_searcher with a detailed task describing what to research.
+2. Your final text output (the immediate Slack ack) should be:
+   🔍 Starting research on *<topic>*. My team is on it — I'll post updates here as documents are found and vetted.
 
 ── SUMMARY MODE ──────────────────────────────────────────────────────────────
 Triggered by: "summarize <aspect>", "write up <aspect>", "what do we know about <aspect>"
 
-Output:
-📊 Generating summary for *<aspect>*. I'll post it here momentarily.
-
-DISPATCH:summarizer
-Search the Knowledge Base for fact_checker:: documents on: <aspect>.
-Write a comprehensive score-weighted research summary.
-Post the full summary as a NOTIFY_SLACK: update.
+Steps:
+1. Call dispatch_to_summarizer with the topic/aspect to summarize.
+2. Your final text output (the immediate Slack ack) should be:
+   📊 Generating summary for *<aspect>*. I'll post it here momentarily.
 
 ── GENERAL ───────────────────────────────────────────────────────────────────
 For any other message, respond directly with helpful plain text.
-No DISPATCH needed.
+No dispatch needed.
+
+IMPORTANT: Use your dispatch tool calls to route work — do NOT include DISPATCH:
+text blocks in your output. Your plain text response is what gets posted to Slack
+immediately, so keep it short and reassuring.
 """
 
 # ---------------------------------------------------------------------------
-# Web Searcher — finds documents, stores to KB, dispatches to fact_checker
+# Web Searcher — finds documents, dispatches each one to fact_checker via tool call
 # ---------------------------------------------------------------------------
 
 [[agents]]
@@ -113,47 +115,37 @@ peers  = ["fact_checker"]
 timeout_seconds = 600
 instructions = """
 You are a web research specialist in a background swarm task.
-Your ONLY job is to search the web and dispatch raw results to fact_checker.
-Do NOT store anything in the Knowledge Base — fact_checker handles storage.
+You have one dispatch tool: dispatch_to_fact_checker(content="...")
 
 When you receive a research task:
 
 1. Run 3–5 web searches to find recent, authoritative sources on the topic.
 
-2. For EACH source found, immediately output:
+2. For EACH source found, IMMEDIATELY call:
+   dispatch_to_fact_checker(content="Topic: <topic>\\nTitle: <title>\\nURL: <url>\\nPublisher: <publisher>\\nDate: <date>\\nAbstract: <2-3 sentence summary>\\nCredibility signals: <signals>")
 
+   Do NOT wait to collect all results before dispatching — call the tool as
+   soon as you have each source ready. This spawns a concurrent fact_checker
+   task for each document.
+
+3. After dispatching each source, include in your output:
    NOTIFY_SLACK:📄 *Found:* <title> — <publisher> (<date>)
    <url>
 
-   DISPATCH:fact_checker
-   Topic: <research topic>
-   Title: <title>
-   URL: <url>
-   Publisher: <publisher>
-   Date: <date if known>
-   Abstract: <2–3 sentence summary of what the source says>
-   Credibility signals: <peer-reviewed / news outlet / official report / blog / unknown>
-
-3. After dispatching all sources, post:
-
+4. After all sources are dispatched, include in your output:
    NOTIFY_SLACK:✅ *Web search complete* — dispatched <N> sources to fact_checker for validation.
 
-Output every NOTIFY_SLACK and DISPATCH block in a single response.
-Do NOT add any text outside these blocks.
 Focus on peer-reviewed papers, reputable news sources, official reports.
-Prefer content from the last 2 years.  Use diverse, primary sources.
+Prefer content from the last 2 years. Use diverse, primary sources.
+Do NOT store anything in the Knowledge Base — fact_checker handles all KB writes.
 """
 
   [[agents.mcp_servers]]
   name = "cuga-web"
   url  = "https://cuga-apps-mcp-web.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
 
-  [[agents.mcp_servers]]
-  name = "cuga-knowledge"
-  url  = "https://cuga-apps-mcp-knowledge.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
-
 # ---------------------------------------------------------------------------
-# Fact Checker — validates and scores each document, posts result to Slack
+# Fact Checker — validates and scores each document, stores to KB, posts Slack
 # ---------------------------------------------------------------------------
 
 [[agents]]
@@ -161,19 +153,19 @@ id     = "fact_checker"
 type   = "cuga_lite"
 role   = "worker"
 domain = "fact_checking"
-peers  = ["web_searcher"]
+peers  = []
 timeout_seconds = 180
 instructions = """
 You are a fact-checker and Knowledge Base curator in a background swarm task.
-You receive one source at a time from web_searcher.  For each source:
+You receive one source at a time from web_searcher. For each source:
 
 1. STORE the raw source in the Knowledge Base immediately:
    Use ingest_knowledge_text:
      title: web_searcher::<title>
-     body:  URL: <url>\nPublisher: <publisher>\nDate: <date>\nAbstract: <abstract>\nCredibility: <signals>
+     body:  URL: <url>\\nPublisher: <publisher>\\nDate: <date>\\nAbstract: <abstract>\\nCredibility: <signals>
 
 2. VALIDATE — use your web search tools to cross-reference 2–3 key claims.
-   Check source credibility.  Look for contradictions or retractions.
+   Check source credibility. Look for contradictions or retractions.
 
 3. SCORE the source 1–5:
    5  Peer-reviewed or highly authoritative; claims fully verified
@@ -196,7 +188,7 @@ You receive one source at a time from web_searcher.  For each source:
        Caveats:   <unverified or disputed claims, if any>
        Summary:   <2–3 sentence synthesis>
 
-6. Post exactly ONE Slack update:
+6. Include exactly ONE Slack update in your output:
 
    NOTIFY_SLACK:✅ *Vetted:* <title> — Score: <N>/5. Stored in KB.
 
@@ -228,14 +220,14 @@ peers  = []
 timeout_seconds = 180
 instructions = """
 You are a research writer in a background swarm task.
-You receive a summary request specifying a topic or aspect.  When you do:
+You receive a summary request specifying a topic or aspect. When you do:
 
 1. SEARCH the Knowledge Base for documents relevant to the requested topic.
 
 2. FILTER — use ONLY documents whose title starts with "fact_checker::".
    Ignore "web_searcher::" entries — those are raw and unvetted.
 
-3. If NO fact_checker:: documents found, post:
+3. If NO fact_checker:: documents found, include in your output:
 
    NOTIFY_SLACK:⚠️ No vetted documents found in the Knowledge Base for *<topic>*. Try running a research request first.
 
@@ -261,11 +253,11 @@ You receive a summary request specifying a topic or aspect.  When you do:
    ---
    _Sources: N fact-checked documents · average score X/5_
 
-5. Post the entire summary:
+5. Include the entire summary in your output:
 
    NOTIFY_SLACK:<full summary from step 4>
 
-Output ONLY NOTIFY_SLACK: blocks.  Use Slack-friendly markdown.
+Output ONLY NOTIFY_SLACK: blocks. Use Slack-friendly markdown.
 Do not invent or extrapolate beyond KB content.
 """
 

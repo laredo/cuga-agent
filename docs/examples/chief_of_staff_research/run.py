@@ -45,7 +45,7 @@ async def main():
     from dashboard import start as start_dashboard
 
     from cuga.backend.multi_agent.config import load_config
-    from cuga.backend.multi_agent.agent_factory import AgentFactory
+    from cuga.backend.multi_agent.swarm_factory import SwarmAgentFactory
     from cuga.backend.multi_agent.runner import ConfigurationRunner
     from cuga.backend.integrations.slack.client import SlackClient
     from cuga.backend.integrations.slack.notification_channel import SlackNotificationChannel
@@ -67,8 +67,13 @@ async def main():
     cfg = load_config(TOPOLOGY)
     logger.info(f"Loaded topology '{cfg.name}' ({cfg.pattern}, {len(cfg.agents)} agents)")
 
-    async with AgentFactory(cfg) as factory:
-        runner = ConfigurationRunner(cfg, agents=factory.agents, callbacks=callbacks)
+    async with SwarmAgentFactory(cfg) as factory:
+        runner = ConfigurationRunner(
+            cfg,
+            agents=factory.agents,
+            callbacks=callbacks,
+            agent_queues=factory.agent_queues,
+        )
         logger.info("Multi-agent runner ready")
         for a in cfg.agents:
             logger.info(f"  • {a.id:<22} role={a.role}  domain={a.domain or '-'}")

@@ -1,34 +1,40 @@
-"""Swarm pattern: concurrent agent tasks with asyncio.Queue inboxes and peer ACL.
+"""Swarm pattern: event-queue-driven agent dispatch with one task per message.
 
-Routing directives agents embed in their plain-text output:
+How it works
+------------
+``SwarmAgentFactory`` (see swarm_factory.py) gives each agent:
+  • An ``EventQueue`` inbox (branch event infrastructure).
+  • A ``dispatch_to_<peer_id>`` LangChain tool for every declared peer.
 
-    DISPATCH:<agent_id>
-    <content to route to that agent's inbox>
+When an agent calls ``dispatch_to_fact_checker(content="...")`` **during its
+LangGraph ReAct loop**, that tool immediately enqueues an ``Event(type=AGENT)``
+into fact_checker's EventQueue.  ``run_swarm`` runs a drain task per queue;
+every AGENT event spawns a fresh ``asyncio.Task`` — so five documents found by
+web_searcher become five concurrent fact_checker tasks, each starting the
+moment web_searcher dispatches that document.
 
-    NOTIFY_SLACK:<text to post to the Slack thread>
+NOTIFY_SLACK: text directive (in agent output)
+----------------------------------------------
+Agents can still post to Slack by including ``NOTIFY_SLACK:<text>`` lines in
+their final text output.  These are parsed after ``graph.ainvoke()`` returns
+and posted via the ``slack_poster`` coroutine.
 
-ACL enforced by SwarmBus (from topology ``peers`` fields):
-  • sender may route to agents listed in its own ``peers``
-  • ALL agents may additionally route to the entry agent
-  • ``__system__`` is exempt — seeds the entry agent's inbox
-
-Lifecycle — lazy task spawning
-------------------------------
-Only the entry agent task is started up front.  Worker tasks are spawned
-on-demand the first time a DISPATCH message is routed to them.  This ensures
-workers are always alive when their first message arrives, regardless of how
-long upstream agents spend doing tool calls.  Workers exit after a short idle
-window once their queue drains.
+DISPATCH: text directive — REMOVED
+-----------------------------------
+Text-based DISPATCH blocks are no longer used for worker→worker routing.
+All routing is done through tool calls so dispatch happens mid-run.
+The entry agent's plain-text output (non-NOTIFY lines) becomes the Slack ack.
 """
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
 from loguru import logger
 
+from cuga.backend.events.models import Event, EventType
+from cuga.backend.events.queue import EventQueue
 from cuga.backend.multi_agent.patterns.pipeline import (
     RunResult,
     _build_graph_state,
@@ -36,207 +42,107 @@ from cuga.backend.multi_agent.patterns.pipeline import (
 )
 
 if TYPE_CHECKING:
-    from cuga.backend.multi_agent.config import AgentConfig, MultiAgentConfig
+    from cuga.backend.multi_agent.config import MultiAgentConfig
     from cuga.backend.multi_agent.task_state import TaskState
 
 SlackPoster = Callable[[str], Coroutine[Any, Any, None]]
-EnsureTask = Callable[[str], None]
 
 
 # ---------------------------------------------------------------------------
-# Message envelope
+# Output parsing — NOTIFY_SLACK: only
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class SwarmMessage:
-    sender: str
-    content: str
+def _parse_slack_notifications(raw: str) -> Tuple[str, List[str]]:
+    """Extract NOTIFY_SLACK: blocks and leftover plain text from agent output.
 
-
-_SHUTDOWN = SwarmMessage(sender="__shutdown__", content="")
-
-_WORKER_IDLE_TIMEOUT = 60.0   # seconds a worker waits for another message before exiting
-
-
-# ---------------------------------------------------------------------------
-# SwarmBus
-# ---------------------------------------------------------------------------
-
-class SwarmBus:
-    """Per-agent asyncio.Queue inboxes with peer ACL enforcement.
-
-    ACL rules:
-      * sender → recipient  allowed when  ``recipient in sender.peers``
-      * any agent           → entry agent always allowed
-      * ``__system__``      → entry agent (bootstrap only)
-    """
-
-    def __init__(self, agent_configs: List["AgentConfig"]) -> None:
-        self._queues: Dict[str, asyncio.Queue[SwarmMessage]] = {
-            a.id: asyncio.Queue() for a in agent_configs
-        }
-        self._peers: Dict[str, frozenset[str]] = {
-            a.id: frozenset(a.peers) for a in agent_configs
-        }
-        self._entry_id: str = next(a.id for a in agent_configs if a.role == "entry")
-
-    @property
-    def entry_id(self) -> str:
-        return self._entry_id
-
-    def send(self, sender: str, recipient: str, content: str) -> None:
-        """Put *content* in *recipient*'s inbox; raise on ACL violation or unknown agent."""
-        if recipient not in self._queues:
-            raise ValueError(f"Unknown agent: {recipient!r}")
-        if sender != "__system__" and recipient != self._entry_id:
-            allowed = self._peers.get(sender, frozenset())
-            if recipient not in allowed:
-                raise PermissionError(
-                    f"ACL violation: {sender!r} → {recipient!r}. "
-                    f"Declared peers of {sender!r}: {sorted(allowed)}"
-                )
-        self._queues[recipient].put_nowait(SwarmMessage(sender=sender, content=content))
-        logger.debug(f"[SwarmBus] {sender!r} → {recipient!r} ({len(content)} chars)")
-
-    async def receive(self, agent_id: str, timeout: float) -> Optional[SwarmMessage]:
-        """Return next message or None after *timeout* seconds of silence."""
-        try:
-            return await asyncio.wait_for(self._queues[agent_id].get(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return None
-
-
-# ---------------------------------------------------------------------------
-# Output parsing
-# ---------------------------------------------------------------------------
-
-def _parse_output(raw: str) -> Tuple[str, List[str], List[Tuple[str, str]]]:
-    """Parse agent output for routing and Slack notification directives.
-
-    Returns ``(leftover, notify_texts, dispatches)`` where:
-
-    * ``leftover``      — plain text outside any directive block; used as the
-                          entry agent's immediate Slack acknowledgement
-    * ``notify_texts``  — list of ``NOTIFY_SLACK:`` payloads to post to Slack
-    * ``dispatches``    — list of ``(recipient, content)`` from ``DISPATCH:`` blocks
+    Returns ``(leftover, notify_texts)`` where:
+      * ``leftover``     — lines outside any NOTIFY_SLACK: block; used as the
+                           entry agent's immediate Slack acknowledgement text.
+      * ``notify_texts`` — list of texts to post to the Slack thread.
     """
     leftover_lines: List[str] = []
     notify_texts: List[str] = []
-    dispatches: List[Tuple[str, str]] = []
-
-    current_directive: Optional[str] = None   # "DISPATCH" | "NOTIFY_SLACK"
-    current_recipient: Optional[str] = None
+    in_notify = False
     current_lines: List[str] = []
 
-    def _flush() -> None:
-        if current_directive == "DISPATCH" and current_recipient:
-            dispatches.append((current_recipient, "\n".join(current_lines).strip()))
-        elif current_directive == "NOTIFY_SLACK":
-            text = "\n".join(current_lines).strip()
-            if text:
-                notify_texts.append(text)
+    def _flush_notify() -> None:
+        text = "\n".join(current_lines).strip()
+        if text:
+            notify_texts.append(text)
 
     for line in raw.splitlines():
         stripped = line.strip()
-        upper = stripped.upper()
-
-        if upper.startswith("DISPATCH:"):
-            _flush()
-            current_directive = "DISPATCH"
-            current_recipient = stripped[len("DISPATCH:"):].strip()
+        if stripped.upper().startswith("NOTIFY_SLACK:"):
+            if in_notify:
+                _flush_notify()
+            in_notify = True
             current_lines = []
-        elif upper.startswith("NOTIFY_SLACK:"):
-            _flush()
-            current_directive = "NOTIFY_SLACK"
-            current_recipient = None
             inline = stripped[len("NOTIFY_SLACK:"):].strip()
-            current_lines = [inline] if inline else []
-        elif current_directive is not None:
+            if inline:
+                current_lines = [inline]
+        elif in_notify:
             current_lines.append(line)
         else:
             leftover_lines.append(line)
 
-    _flush()
-    return "\n".join(leftover_lines).strip(), notify_texts, dispatches
+    if in_notify:
+        _flush_notify()
+
+    return "\n".join(leftover_lines).strip(), notify_texts
 
 
 # ---------------------------------------------------------------------------
-# Agent task
+# Single-message agent task
 # ---------------------------------------------------------------------------
 
 async def _agent_task(
     agent_id: str,
     agent: Any,
-    bus: SwarmBus,
+    content: str,
     task_id: str,
+    msg_index: int,
     timeout: int,
     is_entry: bool,
-    first_response_queue: "asyncio.Queue[str]",
+    first_response_queue: Optional["asyncio.Queue[str]"],
     slack_poster: Optional[SlackPoster],
-    ensure_task: EnsureTask,
     callbacks: Optional[List[Any]] = None,
 ) -> None:
-    """Dequeue → invoke LLM → parse directives → spawn workers + route + post Slack."""
-    first_response_sent = False
-    idle_timeout = 5.0 if is_entry else _WORKER_IDLE_TIMEOUT
+    """Invoke one agent on one message, parse NOTIFY_SLACK: and post updates."""
+    logger.info(f"[swarm:{agent_id}#{msg_index}] processing ({len(content)} chars)")
 
-    while True:
-        msg = await bus.receive(agent_id, timeout=idle_timeout)
+    invoke_config: Dict[str, Any] = {
+        "configurable": {"thread_id": f"{task_id}-{agent_id}-{msg_index}"},
+        "tags": [agent_id],
+    }
+    if callbacks:
+        invoke_config["callbacks"] = callbacks
 
-        if msg is None:
-            logger.debug(f"[swarm:{agent_id}] idle {idle_timeout}s — task exiting")
-            return
-        if msg is _SHUTDOWN:
-            return
+    try:
+        result = await asyncio.wait_for(
+            agent.graph.ainvoke(_build_graph_state(content), config=invoke_config),
+            timeout=float(timeout),
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"[swarm:{agent_id}#{msg_index}] timed out after {timeout}s")
+        if is_entry and first_response_queue is not None:
+            await first_response_queue.put("⏳ Request received — working in the background.")
+        return
+    except Exception as exc:
+        logger.error(f"[swarm:{agent_id}#{msg_index}] error: {exc}")
+        if is_entry and first_response_queue is not None:
+            await first_response_queue.put(f"❌ Error starting swarm: {exc}")
+        return
 
-        logger.info(f"[swarm:{agent_id}] ← {msg.sender!r} ({len(msg.content)} chars)")
+    answer = _extract_answer(result)
+    leftover, notify_texts = _parse_slack_notifications(answer)
 
-        try:
-            invoke_config: Dict[str, Any] = {
-                "configurable": {"thread_id": f"{task_id}-{agent_id}"},
-                "tags": [agent_id],
-            }
-            if callbacks:
-                invoke_config["callbacks"] = callbacks
-            result = await asyncio.wait_for(
-                agent.graph.ainvoke(_build_graph_state(msg.content), config=invoke_config),
-                timeout=float(timeout),
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"[swarm:{agent_id}] LLM timed out after {timeout}s")
-            if is_entry and not first_response_sent:
-                await first_response_queue.put("⏳ Request received — working in the background.")
-                first_response_sent = True
-            continue
-        except Exception as exc:
-            logger.error(f"[swarm:{agent_id}] error: {exc}")
-            if is_entry and not first_response_sent:
-                await first_response_queue.put(f"❌ Error: {exc}")
-                first_response_sent = True
-            continue
+    if slack_poster:
+        for text in notify_texts:
+            asyncio.create_task(_safe_post(slack_poster, text, agent_id))
 
-        answer = _extract_answer(result)
-        leftover, notify_texts, dispatches = _parse_output(answer)
-
-        # Post NOTIFY_SLACK: updates to the Slack thread
-        if slack_poster:
-            for text in notify_texts:
-                asyncio.create_task(_safe_post(slack_poster, text, agent_id))
-
-        # Spawn worker tasks on-demand, then route DISPATCH: messages
-        for recipient, content in dispatches:
-            try:
-                ensure_task(recipient)        # spawn if not already running
-                bus.send(agent_id, recipient, content)
-            except (PermissionError, ValueError) as exc:
-                logger.warning(f"[swarm:{agent_id}] routing skipped: {exc}")
-
-        # Entry agent: signal first response then exit — workers handle the rest
-        if is_entry and not first_response_sent:
-            await first_response_queue.put(leftover or "_Working on it…_")
-            first_response_sent = True
-            logger.debug(f"[swarm:{agent_id}] ack sent, task exiting")
-            return
+    if is_entry and first_response_queue is not None:
+        await first_response_queue.put(leftover or "_Working on it…_")
+        logger.info(f"[swarm:{agent_id}#{msg_index}] ack posted to Slack")
 
 
 async def _safe_post(poster: SlackPoster, text: str, agent_id: str) -> None:
@@ -256,48 +162,75 @@ async def run_swarm(
     request: str,
     task_id: str,
     task_state: "TaskState",
+    agent_queues: Optional[Dict[str, EventQueue]] = None,
     slack_poster: Optional[SlackPoster] = None,
     callbacks: Optional[List[Any]] = None,
 ) -> RunResult:
-    """Seed the entry agent and return its immediate ack; workers spawn on-demand.
+    """Start per-agent EventQueue drain loops and seed the entry agent.
 
-    Only the entry task is started up front.  Worker tasks are created the
-    moment a DISPATCH message is routed to them, so they are guaranteed to be
-    alive when the message arrives regardless of upstream processing time.
+    Each ``Event(type=AGENT)`` arriving in an agent's queue spawns a fresh
+    ``asyncio.Task``.  Returns as soon as the entry agent posts its ack; all
+    worker tasks continue concurrently in the background.
+
+    Requires ``agent_queues`` from ``SwarmAgentFactory``.
     """
-    bus = SwarmBus(config.agents)
-    first_response_queue: asyncio.Queue[str] = asyncio.Queue()
-    entry_id = bus.entry_id
-    timeout_map = {a.id: a.timeout_seconds for a in config.agents}
-    running_tasks: Dict[str, asyncio.Task] = {}
+    if not agent_queues:
+        raise ValueError(
+            "run_swarm requires agent_queues from SwarmAgentFactory. "
+            "Use SwarmAgentFactory instead of AgentFactory for swarm topologies."
+        )
 
-    def ensure_task(agent_id: str) -> None:
-        """Spawn an agent task if one isn't already running."""
-        existing = running_tasks.get(agent_id)
-        if existing is not None and not existing.done():
-            return
-        is_entry = agent_id == entry_id
-        running_tasks[agent_id] = asyncio.create_task(
+    entry_id = next(a.id for a in config.agents if a.role == "entry")
+    timeout_map = {a.id: a.timeout_seconds for a in config.agents}
+    first_response_queue: asyncio.Queue[str] = asyncio.Queue()
+    _counter = 0
+
+    def _spawn(agent_id: str, content: str) -> None:
+        nonlocal _counter
+        _counter += 1
+        idx = _counter
+        asyncio.create_task(
             _agent_task(
                 agent_id=agent_id,
                 agent=agents[agent_id],
-                bus=bus,
+                content=content,
                 task_id=task_id,
+                msg_index=idx,
                 timeout=timeout_map[agent_id],
-                is_entry=is_entry,
-                first_response_queue=first_response_queue,
+                is_entry=(agent_id == entry_id),
+                first_response_queue=first_response_queue if agent_id == entry_id else None,
                 slack_poster=slack_poster,
-                ensure_task=ensure_task,
                 callbacks=callbacks or [],
             ),
-            name=f"swarm-{task_id}-{agent_id}",
+            name=f"swarm-{task_id}-{agent_id}-{_counter}",
         )
-        logger.info(f"[run_swarm] spawned task for {agent_id!r}")
+        logger.debug(f"[run_swarm] spawned {agent_id!r} task #{idx}")
 
-    # Only start the entry agent; workers are spawned when DISPATCHed to.
-    ensure_task(entry_id)
-    bus.send("__system__", entry_id, request)
+    # Drain loop: one per agent queue, runs for the lifetime of the swarm
+    async def _drain(agent_id: str, queue: EventQueue) -> None:
+        async def _handle(event: Event) -> None:
+            if event.type == EventType.AGENT:
+                content = event.payload.get("content", "")
+                _spawn(agent_id, content)
 
+        queue.start_processor(_handle)
+        logger.info(f"[run_swarm] EventQueue drain started for {agent_id!r}")
+
+    for agent_cfg in config.agents:
+        await _drain(agent_cfg.id, agent_queues[agent_cfg.id])
+
+    # Seed the entry agent with the initial user request
+    from cuga.backend.events.models import EventSource
+    seed_event = Event(
+        type=EventType.AGENT,
+        source=EventSource.INTERNAL,
+        event_name="agent_dispatch",
+        payload={"sender": "__system__", "recipient": entry_id, "content": request},
+    )
+    await agent_queues[entry_id].enqueue(seed_event)
+    logger.info(f"[run_swarm] seeded {entry_id!r} with request ({len(request)} chars)")
+
+    # Wait for the entry agent's immediate ack, then return
     try:
         ack = await asyncio.wait_for(first_response_queue.get(), timeout=120.0)
     except asyncio.TimeoutError:
