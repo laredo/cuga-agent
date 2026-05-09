@@ -16,6 +16,11 @@ from uuid import UUID
 
 from loguru import logger
 
+try:
+    from langchain_core.callbacks.base import BaseCallbackHandler
+except ImportError:
+    from langchain.callbacks.base import BaseCallbackHandler  # type: ignore[no-redef]
+
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_FILE = LOG_DIR / "swarm.log"
 
@@ -24,10 +29,11 @@ LOG_FILE = LOG_DIR / "swarm.log"
 # Tool call logging callback (always active — no external credentials needed)
 # ---------------------------------------------------------------------------
 
-class ToolCallLoggingCallback:
+class ToolCallLoggingCallback(BaseCallbackHandler):
     """LangChain BaseCallbackHandler that writes tool calls to loguru.
 
-    Compatible with both langchain_core and legacy langchain callback APIs.
+    Inherits from BaseCallbackHandler so LangChain's callback machinery
+    (run_inline, ignore_* flags, etc.) is satisfied without duck-typing.
     Tags passed via ``config={"tags": [agent_id]}`` are surfaced as the agent
     label so per-agent filtering in the dashboard works.
     """
@@ -108,9 +114,6 @@ class ToolCallLoggingCallback:
     def on_llm_end(self, response: Any, *, run_id: UUID = None, tags: Optional[List[str]] = None, **kwargs: Any) -> None:
         pass  # individual tool-end events are sufficient
 
-    # satisfy LangChain's duck-typing check
-    def __repr__(self) -> str:
-        return "ToolCallLoggingCallback()"
 
 
 # ---------------------------------------------------------------------------
