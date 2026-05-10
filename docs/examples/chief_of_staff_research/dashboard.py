@@ -59,8 +59,15 @@ _RE_NOTIFY     = re.compile(r"NOTIFY_SLACK:(.*)")
 
 def _parse_event(line: str) -> dict | None:
     """Return a structured event dict if the line matches a known pattern, else None."""
-    # Strip loguru timestamp prefix if present
-    msg = re.sub(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ \| \S+\s+\| ", "", line)
+    # Strip loguru prefix: "YYYY-MM-DD HH:MM:SS.mmm | LEVEL    | [agent]           | "
+    # Handles both old format (3 fields) and new format with agent column (4 fields).
+    msg = re.sub(
+        r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ \| \S+\s+\| [^|]*\| ",
+        "", line
+    )
+    if msg == line:
+        # Fallback: strip old 3-field prefix
+        msg = re.sub(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ \| \S+\s+\| ", "", line)
 
     m = _RE_TOOL_START.search(msg)
     if m:
@@ -198,20 +205,22 @@ async def _tail_events() -> AsyncGenerator[str, None]:
 def _matches(line: str, agent_filter: str) -> bool:
     """Match a raw log line against an agent filter.
 
-    The log format is:
-      YYYY-MM-DD HH:MM:SS.mmm | LEVEL    | <agent padded to 20>| message
+    The log format (new, with agent column) is:
+      YYYY-MM-DD HH:MM:SS.mmm | LEVEL    | <agent padded to 20> | message
 
-    We match the agent column (field index 4 when split on ' | ') so that
+    We match the agent column (parts[2] when split on ' | ') so that
     selecting 'web_searcher' doesn't also show lines where 'web_searcher'
     happens to appear in another agent's message body.
+
+    Old-format lines (3 parts) fall back to a substring search.
     """
     if not agent_filter:
         return True
-    parts = line.split(" | ", 4)
-    if len(parts) >= 5:
-        # parts[3] is the agent column (20-char padded)
-        return agent_filter.lower() in parts[3].lower()
-    # Fallback for lines without the new format (e.g. continuation lines)
+    parts = line.split(" | ", 3)   # at most 4 fields: time | level | agent | message
+    if len(parts) >= 4:
+        # parts[2] is the agent column (20-char padded)
+        return agent_filter.lower() in parts[2].lower()
+    # Fallback for old-format lines (no agent column)
     return agent_filter.lower() in line.lower()
 
 
