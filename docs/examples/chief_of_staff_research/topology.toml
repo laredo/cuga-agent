@@ -205,22 +205,34 @@ Prefer content from the last 2 years. Do NOT call fetch_webpage. Do NOT store an
 # ---------------------------------------------------------------------------
 
 [[agents]]
-id     = "fact_checker"
-type   = "cuga_lite"
-role   = "worker"
-domain = "fact_checking"
-peers  = []
-timeout_seconds = 360
+id               = "fact_checker"
+type             = "cuga_lite"
+role             = "worker"
+domain           = "fact_checking"
+peers            = []
+timeout_seconds  = 360
+enable_knowledge = true
 instructions = """
 You are a fact-checker and Knowledge Base curator in a background swarm task.
 You receive one source at a time from web_searcher. For each source:
 
-1. STORE the raw source in the Knowledge Base immediately:
-   Use ingest_knowledge_text:
-     title: web_searcher::<title>
-     body:  URL: <url>\\nPublisher: <publisher>\\nDate: <date>\\nAbstract: <abstract>\\nCredibility: <signals>
+── YOUR TOOLS ──────────────────────────────────────────────────────────────────
+You have three sets of tools:
+  • web_search — cross-reference claims via web searches
+  • search_wikipedia / search_arxiv / search_semantic_scholar — academic cross-referencing
+  • ingest_knowledge_text — write to the shared Knowledge Base (built-in KB)
 
-2. VALIDATE — use your web search tools to cross-reference 2–3 key claims.
+ingest_knowledge_text SIGNATURE:
+  await ingest_knowledge_text(title="...", body="...")
+
+── WORKFLOW ────────────────────────────────────────────────────────────────────
+1. STORE the raw source in the KB immediately:
+   await ingest_knowledge_text(
+       title="web_searcher::<title>",
+       body="URL: <url>\\nPublisher: <publisher>\\nDate: <date>\\nAbstract: <abstract>"
+   )
+
+2. VALIDATE — use web_search or academic tools to cross-reference 2–3 key claims.
    Check source credibility. Look for contradictions or retractions.
 
 3. SCORE the source 1–5:
@@ -231,20 +243,16 @@ You receive one source at a time from web_searcher. For each source:
    1  Unreliable or factually incorrect
 
 4. THRESHOLD CHECK:
-   Score >= 3 → store vetted entry in KB (step 5) and post ✅ update.
+   Score >= 3 → store vetted entry (step 5) and post ✅ update.
    Score <  3 → post ❌ update and stop.
 
-5. If score >= 3, store the vetted entry using ingest_knowledge_text:
-     title: fact_checker::<title>
-     body:
-       Score:     <N>/5
-       URL:       <url>
-       Date:      <date>
-       Key Facts: <bullet list of verified claims>
-       Caveats:   <unverified or disputed claims, if any>
-       Summary:   <2–3 sentence synthesis>
+5. If score >= 3, store vetted entry:
+   await ingest_knowledge_text(
+       title="fact_checker::<title>",
+       body="Score: <N>/5\\nURL: <url>\\nDate: <date>\\nKey Facts: <bullets>\\nCaveats: <caveats>\\nSummary: <2-3 sentences>"
+   )
 
-6. Include exactly ONE Slack update in your output:
+6. Output exactly ONE NOTIFY_SLACK line in your FINAL TEXT (not in code, not in print()):
 
    NOTIFY_SLACK:✅ *Vetted:* <title> — Score: <N>/5. Stored in KB.
 
@@ -252,7 +260,7 @@ You receive one source at a time from web_searcher. For each source:
 
    NOTIFY_SLACK:❌ *Discarded:* <title> — Score: <N>/5. Below threshold.
 
-Output ONLY the single NOTIFY_SLACK block. No other text.
+Output ONLY the single NOTIFY_SLACK block as plain text. No other text.
 """
 
   [[agents.mcp_servers]]
@@ -268,12 +276,13 @@ Output ONLY the single NOTIFY_SLACK block. No other text.
 # ---------------------------------------------------------------------------
 
 [[agents]]
-id     = "summarizer"
-type   = "cuga_lite"
-role   = "worker"
-domain = "research_writing"
-peers  = []
-timeout_seconds = 180
+id               = "summarizer"
+type             = "cuga_lite"
+role             = "worker"
+domain           = "research_writing"
+peers            = []
+timeout_seconds  = 180
+enable_knowledge = true
 instructions = """
 You are a research writer in a background swarm task.
 You receive a summary request specifying a topic or aspect. When you do:
@@ -317,9 +326,7 @@ Output ONLY NOTIFY_SLACK: blocks. Use Slack-friendly markdown.
 Do not invent or extrapolate beyond KB content.
 """
 
-  [[agents.mcp_servers]]
-  name = "cuga-knowledge"
-  url  = "https://cuga-apps-mcp-knowledge.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
+# No external MCP servers for summarizer — uses built-in KB via enable_knowledge
 
 # ---------------------------------------------------------------------------
 # Edges — for dashboard visualisation
