@@ -154,7 +154,10 @@ def setup_swarm_logging() -> Path:
         rotation="10 MB",
         retention="7 days",
         enqueue=True,
-        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {message}",
+        # Include agent context when set via logger.contextualize(agent=...)
+        # The filter adds a default so {extra[agent]} never raises KeyError.
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {extra[agent]:<20}| {message}",
+        filter=lambda record: record["extra"].setdefault("agent", "") or True,
     )
     logger.info(f"Swarm log → {LOG_FILE}")
     return LOG_FILE

@@ -117,11 +117,14 @@ async def _agent_task(
     if callbacks:
         invoke_config["callbacks"] = callbacks
 
+    # Bind the agent name to every log line emitted during ainvoke so that the
+    # dashboard's per-agent raw-log filter can distinguish agents.
     try:
-        result = await asyncio.wait_for(
-            agent.graph.ainvoke(_build_graph_state(content), config=invoke_config),
-            timeout=float(timeout),
-        )
+        with logger.contextualize(agent=agent_id):
+            result = await asyncio.wait_for(
+                agent.graph.ainvoke(_build_graph_state(content), config=invoke_config),
+                timeout=float(timeout),
+            )
     except asyncio.TimeoutError:
         logger.warning(f"[swarm:{agent_id}#{msg_index}] timed out after {timeout}s")
         if is_entry and first_response_queue is not None:

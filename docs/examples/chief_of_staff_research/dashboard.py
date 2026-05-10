@@ -196,7 +196,23 @@ async def _tail_events() -> AsyncGenerator[str, None]:
 
 
 def _matches(line: str, agent_filter: str) -> bool:
-    return not agent_filter or agent_filter.lower() in line.lower()
+    """Match a raw log line against an agent filter.
+
+    The log format is:
+      YYYY-MM-DD HH:MM:SS.mmm | LEVEL    | <agent padded to 20>| message
+
+    We match the agent column (field index 4 when split on ' | ') so that
+    selecting 'web_searcher' doesn't also show lines where 'web_searcher'
+    happens to appear in another agent's message body.
+    """
+    if not agent_filter:
+        return True
+    parts = line.split(" | ", 4)
+    if len(parts) >= 5:
+        # parts[3] is the agent column (20-char padded)
+        return agent_filter.lower() in parts[3].lower()
+    # Fallback for lines without the new format (e.g. continuation lines)
+    return agent_filter.lower() in line.lower()
 
 
 # ---------------------------------------------------------------------------

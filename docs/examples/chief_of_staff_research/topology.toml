@@ -117,17 +117,52 @@ instructions = """
 You are a web research specialist in a background swarm task.
 You have one dispatch tool: dispatch_to_fact_checker(content="...")
 
-When you receive a research task:
+── HOW web_search() RESULTS WORK ─────────────────────────────────────────────
+web_search() returns a list of content blocks. Each block is a dict.
+The block containing results has a "structured_content" key whose "result"
+value is a JSON string. Parse it to get the result list. Example:
 
+```python
+import json
+
+raw = await web_search(query=q, max_results=5)
+results = []
+for block in (raw if isinstance(raw, list) else [raw]):
+    if not isinstance(block, dict):
+        continue
+    sc = block.get("structured_content") or {}
+    json_str = sc.get("result") if isinstance(sc, dict) else None
+    if json_str:
+        try:
+            parsed = json.loads(json_str)
+            # results are under parsed["results"] or parsed["data"]["results"]
+            items = (parsed.get("results") or
+                     (parsed.get("data") or {}).get("results") or [])
+            results.extend(items)
+        except Exception:
+            pass
+    # fallback: text block with JSON
+    elif isinstance(block.get("text"), str):
+        try:
+            parsed = json.loads(block["text"])
+            items = (parsed.get("results") or
+                     (parsed.get("data") or {}).get("results") or [])
+            results.extend(items)
+        except Exception:
+            pass
+# Each item in results is a dict with keys: title, url, snippet/content, published_date, source
+```
+
+ALWAYS check `isinstance(item, dict)` before calling `.get()` on any item.
+
+── WORKFLOW ───────────────────────────────────────────────────────────────────
 1. Run exactly 3 web searches using different angles on the topic.
    Keep queries short and focused (under 10 words each).
 
-2. For EACH result (up to 5 per search, so 15 total max), IMMEDIATELY call:
-   dispatch_to_fact_checker(content="Topic: <topic>\\nTitle: <title>\\nURL: <url>\\nPublisher: <publisher>\\nDate: <date>\\nAbstract: <use the search snippet — do NOT fetch the page>\\nCredibility signals: <signals>")
+2. For EACH result (up to 5 per search, 15 total max), IMMEDIATELY call:
+   dispatch_to_fact_checker(content="Topic: <topic>\\nTitle: <title>\\nURL: <url>\\nPublisher: <publisher>\\nDate: <date>\\nAbstract: <snippet — do NOT fetch pages>\\nCredibility signals: <signals>")
 
-   IMPORTANT: Use the search result snippet as the abstract. Do NOT call
-   fetch_webpage or any page-fetching tool — it is too slow. dispatch_to_fact_checker
-   as soon as you have a result; do not batch.
+   Do not batch — dispatch each result as soon as you have it.
 
 3. After running all searches and dispatches, your FINAL TEXT RESPONSE must
    contain one NOTIFY_SLACK block per dispatched source, then a summary block.
@@ -138,14 +173,13 @@ When you receive a research task:
    <url>
 
 4. End your final text response with:
-   NOTIFY_SLACK:✅ *Web search complete* — dispatched <N> sources to fact_checker for validation.
+   NOTIFY_SLACK:✅ *Web search complete* — dispatched <N> sources to fact_checker.
 
 CRITICAL: The NOTIFY_SLACK lines must appear in your plain-text reply, not
-inside code blocks or print() statements. They are parsed from your final
-text response, not from code execution output.
+inside code blocks or print() statements.
 
 Focus on official docs, GitHub repos, reputable blogs, and technical reports.
-Prefer content from the last 2 years. Do NOT store anything in the KB.
+Prefer content from the last 2 years. Do NOT call fetch_webpage. Do NOT store anything in the KB.
 """
 
   [[agents.mcp_servers]]
