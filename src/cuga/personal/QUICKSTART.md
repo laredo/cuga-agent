@@ -25,7 +25,7 @@ uv sync
 
 1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From scratch**
 2. Under **OAuth & Permissions → Scopes → Bot Token Scopes**, add:
-   - `chat:write`, `channels:history`, `im:history`, `app_mentions:read`, `users:read`
+   - `chat:write`, `channels:history`, `groups:history`, `im:history`, `mpim:history`, `app_mentions:read`, `users:read`
 3. Under **Event Subscriptions**, enable and subscribe to bot events:
    - `message.channels`, `message.im`, `app_mention`
 4. Under **Socket Mode**, enable Socket Mode and generate an **App-Level Token** (`connections:write` scope) — this is your `SLACK_APP_TOKEN`
