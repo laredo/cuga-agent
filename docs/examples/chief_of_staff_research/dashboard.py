@@ -303,17 +303,30 @@ _HTML = r"""<!DOCTYPE html>
     font-size: 0.65rem; color: #63b3ed; font-weight: 700;
   }
 
-  /* ── Dispatch + notify stack ───────────────────────────────────── */
+  /* ── Dispatch + notify side-by-side ────────────────────────────── */
   .main-cols {
-    display: block;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0;
     border-top: 1px solid #2d3748;
   }
+  .main-cols .col-left  { border-right: 1px solid #2d3748; }
+
+  .panel-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+  }
+  .panel-header .section-title { margin-bottom: 0; flex: 1; }
+  .panel-clear-btn {
+    padding: 2px 9px; border-radius: 6px;
+    background: #2d3748; border: none; color: #718096;
+    cursor: pointer; font-size: 0.68rem;
+    transition: color .15s, background .15s;
+  }
+  .panel-clear-btn:hover { background: #3d4a5e; color: #e2e8f0; }
 
   /* ── Dispatch stream ────────────────────────────────────────────── */
   #dispatch-feed {
-    height: 160px; overflow-y: auto;
+    height: 200px; overflow-y: auto;
     font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.7rem;
-    line-height: 1.6; padding: 10px 14px;
+    line-height: 1.6; padding: 0 4px;
   }
   .dispatch-row { display: flex; gap: 8px; align-items: center; }
   .dispatch-from { font-weight: 700; }
@@ -323,8 +336,8 @@ _HTML = r"""<!DOCTYPE html>
 
   /* ── NOTIFY feed ────────────────────────────────────────────────── */
   #notify-feed {
-    height: 160px; overflow-y: auto;
-    font-size: 0.75rem; line-height: 1.5; padding: 10px 14px;
+    height: 200px; overflow-y: auto;
+    font-size: 0.75rem; line-height: 1.5; padding: 0 4px;
   }
   .notify-row {
     padding: 5px 8px; margin-bottom: 4px;
@@ -398,19 +411,19 @@ _HTML = r"""<!DOCTYPE html>
   <div class="edges" id="edges-list"></div>
 </div>
 
-<!-- Dispatch + notify -->
+<!-- Dispatch + notify side by side -->
 <div class="main-cols">
-  <div class="section">
-    <div class="section-title">
-      <span class="status-dot"></span>Dispatches
-      <span class="badge" id="dispatch-count">0</span>
+  <div class="col-left section">
+    <div class="panel-header">
+      <div class="section-title"><span class="status-dot"></span>Dispatches <span class="badge" id="dispatch-count">0</span></div>
+      <button class="panel-clear-btn" onclick="clearDispatches()">Clear</button>
     </div>
     <div id="dispatch-feed"></div>
   </div>
-  <div class="section" style="border-top:1px solid #2d3748">
-    <div class="section-title">
-      <span class="status-dot"></span>Slack notifications
-      <span class="badge" id="notify-count">0</span>
+  <div class="section">
+    <div class="panel-header">
+      <div class="section-title"><span class="status-dot"></span>Slack notifications <span class="badge" id="notify-count">0</span></div>
+      <button class="panel-clear-btn" onclick="clearNotify()">Clear</button>
     </div>
     <div id="notify-feed"></div>
   </div>
@@ -605,13 +618,23 @@ function handleEvent(ev) {
 // ── Structured event SSE ───────────────────────────────────────────────────
 let _eventEsConnected = false;
 
-function clearLiveFeeds() {
+function clearDispatches() {
   document.getElementById("dispatch-feed").innerHTML = "";
-  document.getElementById("notify-feed").innerHTML = "";
-  dispatchCount = 0; notifyCount = 0; totalEvents = 0;
+  dispatchCount = 0;
   document.getElementById("dispatch-count").textContent = "0";
-  document.getElementById("notify-count").textContent   = "0";
-  document.getElementById("event-count").textContent    = "0 events";
+}
+
+function clearNotify() {
+  document.getElementById("notify-feed").innerHTML = "";
+  notifyCount = 0;
+  document.getElementById("notify-count").textContent = "0";
+}
+
+function clearLiveFeeds() {
+  clearDispatches();
+  clearNotify();
+  totalEvents = 0;
+  document.getElementById("event-count").textContent = "0 events";
   // Reset agent cards to idle
   Object.keys(agentState).forEach(id => setAgentState(id, "idle"));
 }
