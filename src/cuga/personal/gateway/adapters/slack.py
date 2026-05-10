@@ -20,7 +20,15 @@ class SlackAdapter(ChannelAdapter):
 
     platform = "slack"
 
-    def __init__(self, bot_token: str, app_token: Optional[str] = None, signing_secret: Optional[str] = None):
+    def __init__(
+        self, 
+        bot_token: str, 
+        app_token: Optional[str] = None, 
+        signing_secret: Optional[str] = None,
+        force_threaded_replies: bool = True,
+        unfurl_links: bool = False,
+        unfurl_media: bool = False,
+    ):
         try:
             from slack_bolt.async_app import AsyncApp
         except ImportError as e:
@@ -31,6 +39,9 @@ class SlackAdapter(ChannelAdapter):
         self._app = AsyncApp(token=bot_token, signing_secret=signing_secret)
         self._client = self._app.client
         self._app_token = app_token
+        self._force_threaded_replies = force_threaded_replies
+        self._unfurl_links = unfurl_links
+        self._unfurl_media = unfurl_media
         self._on_message: Optional[Callable] = None
         self._register_handlers()
 
@@ -41,7 +52,7 @@ class SlackAdapter(ChannelAdapter):
             if event.get("bot_id") or event.get("subtype"):
                 return
             if self._on_message:
-                msg_event = self.parse_event(event)
+                msg_event = self.parse_event(event, force_threaded=self._force_threaded_replies)
                 if msg_event.text:
                     await self._on_message(msg_event)
 
@@ -55,7 +66,7 @@ class SlackAdapter(ChannelAdapter):
             text = re.sub(r"<@[A-Z0-9]+>\s*", "", text).strip()
             event = {**event, "text": text}
             if self._on_message and text:
-                msg_event = self.parse_event(event)
+                msg_event = self.parse_event(event, force_threaded=self._force_threaded_replies)
                 await self._on_message(msg_event)
 
     async def start(self, on_message: Callable) -> None:
@@ -69,7 +80,12 @@ class SlackAdapter(ChannelAdapter):
         pass
 
     async def send(self, target: DeliveryTarget, text: str, files: Optional[List[dict]] = None) -> None:
-        kwargs: dict = {"channel": target.channel_id, "text": text}
+        kwargs: dict = {
+            "channel": target.channel_id, 
+            "text": text,
+            "unfurl_links": self._unfurl_links,
+            "unfurl_media": self._unfurl_media
+        }
         if target.thread_id:
             kwargs["thread_ts"] = target.thread_id
         await self._client.chat_postMessage(**kwargs)
@@ -89,7 +105,7 @@ class SlackAdapter(ChannelAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def parse_event(raw: dict) -> MessageEvent:
+    def parse_event(raw: dict, force_threaded: bool = False) -> MessageEvent:
         """Convert a raw Slack event dict into a platform-agnostic MessageEvent."""
         files = raw.get("files", [])
         text = raw.get("text", "").strip()
@@ -115,7 +131,7 @@ class SlackAdapter(ChannelAdapter):
             type=msg_type,
             text=text,
             files=[{"name": f.get("name", ""), "url": f.get("url_private", "")} for f in files],
-            thread_id=raw.get("thread_ts"),
+            thread_id=raw.get("thread_ts") or (raw.get("ts") if force_threaded else None),
             timestamp=timestamp,
             metadata={"ts": ts},
         )

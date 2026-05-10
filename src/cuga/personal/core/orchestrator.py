@@ -10,6 +10,7 @@ from cuga.personal.skills.dispatcher import SkillDispatcher
 from cuga.personal.skills.loader import SkillLoader
 from cuga.personal.scheduler.engine import SchedulerEngine
 from cuga.personal.scheduler.models import ScheduledJob
+from cuga.personal.core.swarm_router import SwarmRouter
 
 _APPROVE_WORDS = {"approve", "yes", "post it", "post", "send it", "looks good", "lgtm", "ok", "okay"}
 _DISCARD_WORDS = {"discard", "no", "cancel", "skip", "don't post", "nevermind", "never mind", "abort"}
@@ -34,12 +35,14 @@ class PersonalAgentOrchestrator:
         skill_dispatcher: SkillDispatcher,
         gateway,
         scheduler: Optional[SchedulerEngine] = None,
+        swarm_router: Optional[SwarmRouter] = None,
     ):
         self._session_manager = session_manager
         self._skill_loader = skill_loader
         self._skill_dispatcher = skill_dispatcher
         self._gateway = gateway
         self._scheduler = scheduler
+        self._swarm_router = swarm_router
 
     async def start(self) -> None:
         """Start all components."""
@@ -55,6 +58,11 @@ class PersonalAgentOrchestrator:
             channel_id=event.channel_id,
             thread_id=event.thread_id,
         )
+
+        # 0. Swarm intercept — multi-agent workflows triggered by keyword phrases
+        if self._swarm_router is not None:
+            if await self._swarm_router.try_handle(event, target):
+                return
 
         # 1. Scheduling intent
         if getattr(self, "_scheduler", None):

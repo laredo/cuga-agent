@@ -112,6 +112,8 @@ def start(
         from cuga.personal.skills.dispatcher import SkillDispatcher
         from cuga.personal.scheduler.engine import SchedulerEngine
         from cuga.personal.core.orchestrator import PersonalAgentOrchestrator
+        from cuga.personal.core.swarm_router import SwarmRouter
+        from pathlib import Path
 
         session_manager = SessionManager()
         skill_loader = SkillLoader(skill_dirs)
@@ -121,10 +123,25 @@ def start(
 
         typer.echo(f"Loaded {len(loaded)} skill(s): {[s.metadata.name for s in loaded]}")
 
+        # Scan for swarms declared under skills/swarms/ (config-driven, multi-topology)
+        _repo_root = Path(__file__).resolve().parents[4]
+        _swarm_dirs = [
+            os.environ.get("CUGA_SWARM_DIR", str(_repo_root / "skills" / "swarms")),
+            str(Path("~/.cuga/swarms").expanduser()),
+        ]
+        swarm_router = SwarmRouter.from_dirs(_swarm_dirs)  # gateway injected below
+        if swarm_router.registered_swarms():
+            typer.echo(f"Swarm router loaded: {swarm_router.registered_swarms()}")
+        else:
+            typer.echo("[info] No swarms found — multi-agent routing disabled")
+
         if resolved_channel == "slack":
             bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
             app_token = os.environ.get("SLACK_APP_TOKEN", "")
             signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+            force_threaded = os.environ.get("SLACK_FORCE_THREADED", "true").lower() == "true"
+            unfurl_links = os.environ.get("SLACK_UNFURL_LINKS", "false").lower() == "true"
+            unfurl_media = os.environ.get("SLACK_UNFURL_MEDIA", "false").lower() == "true"
 
             if not bot_token:
                 typer.echo("Error: SLACK_BOT_TOKEN is not set.", err=True)
@@ -139,7 +156,11 @@ def start(
                 bot_token=bot_token,
                 app_token=app_token,
                 signing_secret=signing_secret or None,
+                force_threaded_replies=force_threaded,
+                unfurl_links=unfurl_links,
+                unfurl_media=unfurl_media,
             )
+            swarm_router.gateway = adapter  # inject the live Slack adapter
             scheduler = SchedulerEngine(
                 storage=None,
                 session_manager=session_manager,
@@ -153,6 +174,7 @@ def start(
                 skill_dispatcher=skill_dispatcher,
                 gateway=adapter,
                 scheduler=scheduler,
+                swarm_router=swarm_router,
             )
             typer.echo("Starting CUGA Personal in Slack (Socket Mode)…")
             await orch.start()
@@ -161,6 +183,7 @@ def start(
             from cuga.personal.gateway.adapters.cli import CLIAdapter
 
             adapter = CLIAdapter()
+            swarm_router.gateway = adapter
             scheduler = SchedulerEngine(
                 storage=None,
                 session_manager=session_manager,
@@ -174,6 +197,7 @@ def start(
                 skill_dispatcher=skill_dispatcher,
                 gateway=adapter,
                 scheduler=scheduler,
+                swarm_router=swarm_router,
             )
             typer.echo("Starting CUGA Personal in CLI mode…")
             await orch.start()
