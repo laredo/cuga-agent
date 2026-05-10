@@ -61,13 +61,26 @@ class AgentFactory:
         return agent
 
     def _create_kb_engine(self) -> Optional[Any]:
-        """Create the single shared KnowledgeEngine for this topology."""
+        """Create the single shared KnowledgeEngine for this topology.
+
+        Forces ``enabled=True`` so that ``KnowledgeClient.allowed_scopes()``
+        returns non-empty scopes and ``get_langchain_tools()`` actually produces
+        tools.  Without this, the global KnowledgeConfig default (enabled=False)
+        causes the client to return an empty tool list even when the topology
+        declares ``enable_knowledge = true``.
+        """
         try:
             from cuga.backend.knowledge.engine import KnowledgeEngine
             from cuga.backend.knowledge.config import KnowledgeConfig
             from cuga.config import settings
+            import dataclasses
 
             config = KnowledgeConfig.from_settings(settings)
+            # Topology explicitly requested KB — ensure it is active regardless
+            # of the global enable flag in user settings.
+            if not config.enabled:
+                config = dataclasses.replace(config, enabled=True)
+
             engine = KnowledgeEngine(config)
             logger.info(
                 f"Shared KB engine created for topology '{self._config.name}'"
