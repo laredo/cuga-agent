@@ -126,6 +126,10 @@ async def _agent_task(
         if callbacks:
             invoke_config["callbacks"] = callbacks
 
+        # --- FIX: Inject knowledge engine configuration if available ---
+        if hasattr(agent, "_inject_knowledge_to_config"):
+            agent._inject_knowledge_to_config(invoke_config)
+
         try:
             result = await asyncio.wait_for(
                 agent.graph.ainvoke(_build_graph_state(content), config=invoke_config),
@@ -139,7 +143,7 @@ async def _agent_task(
         except Exception as exc:
             logger.error(f"[swarm:{agent_id}#{msg_index}] error: {exc}")
             if is_entry and first_response_queue is not None:
-                await first_response_queue.put(f"❌ Error starting swarm: {exc}")
+                await first_response_queue.put(f"❌ Error during swarm execution: {exc}")
             return
 
         answer = _extract_answer(result)
@@ -164,6 +168,36 @@ async def _safe_post(poster: SlackPoster, text: str, agent_id: str) -> None:
 # ---------------------------------------------------------------------------
 # run_swarm
 # ---------------------------------------------------------------------------
+
+_task_posters: Dict[str, SlackPoster] = {}
+_task_first_response_queues: Dict[str, asyncio.Queue] = {}
+_agent_counter: int = 0
+
+def _global_spawn(agent_id: str, content: str, task_id: str, agents: Dict[str, Any], timeout_map: Dict[str, int], entry_id: str, callbacks: List[Any]) -> None:
+    global _agent_counter
+    _agent_counter += 1
+    idx = _agent_counter
+    
+    poster = _task_posters.get(task_id)
+    first_resp_q = _task_first_response_queues.get(task_id) if agent_id == entry_id else None
+    
+    asyncio.create_task(
+        _agent_task(
+            agent_id=agent_id,
+            agent=agents[agent_id],
+            content=content,
+            task_id=task_id,
+            msg_index=idx,
+            timeout=timeout_map.get(agent_id, 300),
+            is_entry=(agent_id == entry_id),
+            first_response_queue=first_resp_q,
+            slack_poster=poster,
+            callbacks=callbacks,
+        ),
+        name=f"swarm-{task_id}-{agent_id}-{idx}",
+    )
+    logger.debug(f"[run_swarm] spawned {agent_id!r} task #{idx}")
+
 
 async def run_swarm(
     config: "MultiAgentConfig",
@@ -192,41 +226,31 @@ async def run_swarm(
     entry_id = next(a.id for a in config.agents if a.role == "entry")
     timeout_map = {a.id: a.timeout_seconds for a in config.agents}
     first_response_queue: asyncio.Queue[str] = asyncio.Queue()
-    _counter = 0
+    
+    # Register global state for this task
+    if slack_poster:
+        _task_posters[task_id] = slack_poster
+    _task_first_response_queues[task_id] = first_response_queue
 
-    def _spawn(agent_id: str, content: str) -> None:
-        nonlocal _counter
-        _counter += 1
-        idx = _counter
-        asyncio.create_task(
-            _agent_task(
-                agent_id=agent_id,
-                agent=agents[agent_id],
-                content=content,
-                task_id=task_id,
-                msg_index=idx,
-                timeout=timeout_map[agent_id],
-                is_entry=(agent_id == entry_id),
-                first_response_queue=first_response_queue if agent_id == entry_id else None,
-                slack_poster=slack_poster,
-                callbacks=callbacks or [],
-            ),
-            name=f"swarm-{task_id}-{agent_id}-{_counter}",
-        )
-        logger.debug(f"[run_swarm] spawned {agent_id!r} task #{idx}")
-
-    # Drain loop: one per agent queue, runs for the lifetime of the swarm
-    async def _drain(agent_id: str, queue: EventQueue) -> None:
-        async def _handle(event: Event) -> None:
-            if event.type == EventType.AGENT:
-                content = event.payload.get("content", "")
-                _spawn(agent_id, content)
-
-        queue.start_processor(_handle)
-        logger.info(f"[run_swarm] EventQueue drain started for {agent_id!r}")
-
+    # Ensure drain loops are started ONLY ONCE per agent
     for agent_cfg in config.agents:
-        await _drain(agent_cfg.id, agent_queues[agent_cfg.id])
+        queue = agent_queues[agent_cfg.id]
+        if not getattr(queue, "_processor_task", None):
+            # Capture agent_id in a closure default arg
+            async def _handle(event: Event, _agent_id=agent_cfg.id) -> None:
+                if event.type == EventType.AGENT:
+                    content = event.payload.get("content", "")
+                    evt_task_id = event.payload.get("task_id", "")
+                    _global_spawn(_agent_id, content, evt_task_id, agents, timeout_map, entry_id, callbacks or [])
+
+            try:
+                # Force restart the processor to apply any code changes (like task_id support)
+                if queue._running:
+                    await queue.stop()
+                queue.start_processor(_handle)
+                logger.info(f"[run_swarm] EventQueue drain started/restarted for {agent_cfg.id!r}")
+            except Exception:
+                logger.debug(f"[run_swarm] Event processor already running for {agent_cfg.id!r}")
 
     # Seed the entry agent with the initial user request
     from cuga.backend.events.models import EventSource
@@ -234,7 +258,12 @@ async def run_swarm(
         type=EventType.AGENT,
         source=EventSource.INTERNAL,
         event_name="agent_dispatch",
-        payload={"sender": "__system__", "recipient": entry_id, "content": request},
+        payload={
+            "sender": "__system__",
+            "recipient": entry_id,
+            "content": request,
+            "task_id": task_id,
+        },
     )
     await agent_queues[entry_id].enqueue(seed_event)
     logger.info(f"[run_swarm] seeded {entry_id!r} with request ({len(request)} chars)")

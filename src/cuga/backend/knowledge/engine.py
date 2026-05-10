@@ -309,8 +309,12 @@ class KnowledgeEngine:
         try:
             acquire_exclusive_nonblocking(self._lock_file)
         except OSError:
-            self._lock_file.close()
-            raise RuntimeError("Knowledge engine already running in another process. Start with --workers 1")
+            logger.warning(
+                "Knowledge engine lock is held by another process (likely the main backend). "
+                "Running in shared mode; some background maintenance tasks may conflict."
+            )
+            # We don't raise RuntimeError here so that the Personal orchestrator 
+            # can still mount the KB tools and read/write to SQLite using WAL.
 
         # Default embeddings (lazy — initialized on first use to speed up startup)
         self._default_embeddings = None

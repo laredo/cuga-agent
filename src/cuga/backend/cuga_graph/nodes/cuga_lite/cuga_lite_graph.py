@@ -1493,10 +1493,12 @@ def create_cuga_lite_graph(
                 ]
                 for tool_name in knowledge_tool_names:
                     tools_context_dict.pop(tool_name, None)
-            elif knowledge_tool_names:
-                if _thread_id:
-                    logger.debug("Knowledge tools: thread context available for session scope injection")
-
+            
+            # --- Start Wrapping Section ---
+            # Wrap knowledge and dispatch tools to inject thread_id context.
+            # Since each agent in a swarm has its own graph instance, in-place mutation is safe here.
+            
+            if knowledge_tool_names:
                 def _wrap_knowledge_tool(fn, tid, allowed_scopes, default_scope):
                     async def _wrapped(*args, **kwargs):
                         scope = kwargs.get("scope")
@@ -1530,9 +1532,25 @@ def create_cuga_lite_graph(
                             allowed_knowledge_scopes,
                             default_knowledge_scope,
                         )
+            
+            dispatch_tool_names = [
+                name for name in tools_context_dict if name.startswith("dispatch_to_")
+            ]
+            if dispatch_tool_names:
+                for tool_name in dispatch_tool_names:
+                    original_fn = tools_context_dict.get(tool_name)
+                    if original_fn:
+                        def _make_dispatch_wrapper(fn, tid):
+                            async def _dispatch_wrapped(*args, **kwargs):
+                                if tid:
+                                    kwargs.setdefault("thread_id", tid)
+                                return await fn(*args, **kwargs)
+                            return _dispatch_wrapped
+                        tools_context_dict[tool_name] = _make_dispatch_wrapper(original_fn, _thread_id)
+            # --- End Wrapping Section ---
 
-                # Note: scope rules are injected once via effective_instructions.
-                # No per-tool decoration needed — avoids repeated text in prompt.
+            # Note: scope rules are injected once via effective_instructions.
+            # No per-tool decoration needed — avoids repeated text in prompt.
 
             # Inject knowledge base awareness if knowledge tools are available
             effective_instructions = base_instructions

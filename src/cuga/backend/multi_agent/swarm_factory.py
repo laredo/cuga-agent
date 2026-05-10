@@ -23,7 +23,12 @@ Usage (inside run.py for swarm topologies):
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+try:
+    from langchain_core.runnables import RunnableConfig
+except ImportError:
+    RunnableConfig = Any
 
 from loguru import logger
 
@@ -88,6 +93,7 @@ class SwarmAgentFactory(AgentFactory):
         """Return one LangChain tool per declared peer."""
         try:
             from langchain_core.tools import StructuredTool
+            from langchain_core.runnables import RunnableConfig
         except ImportError:
             logger.warning("langchain_core not available — dispatch tools skipped")
             return []
@@ -104,16 +110,27 @@ class SwarmAgentFactory(AgentFactory):
             # Capture peer_id and peer_queue in default args (avoids late-binding)
             async def _dispatch_fn(
                 content: str,
+                config: Optional[RunnableConfig] = None,
                 _peer_id: str = peer_id,
                 _sender_id: str = sender_id,
                 _queue: EventQueue = peer_queue,
+                **kwargs,
             ) -> str:
                 """Enqueue content to a peer agent's event queue."""
+                thread_id = ""
+                if config and hasattr(config, "get"):
+                    thread_id = config.get("configurable", {}).get("thread_id", "")
+                
+                if not thread_id:
+                    thread_id = kwargs.get("thread_id", "")
+
+                task_id = thread_id.split("-")[0] if thread_id else ""
+
                 event = Event(
                     type=EventType.AGENT,
                     source=EventSource.INTERNAL,
                     event_name="agent_dispatch",
-                    payload={"sender": _sender_id, "recipient": _peer_id, "content": content},
+                    payload={"sender": _sender_id, "recipient": _peer_id, "content": content, "task_id": task_id},
                 )
                 await _queue.enqueue(event)
                 logger.info(f"[dispatch] {_sender_id} → {_peer_id} ({len(content)} chars)")
