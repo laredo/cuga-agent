@@ -139,6 +139,51 @@ or to discard:
 
 ---
 
+## 7. Channel Digest
+
+The channel-digest skill summarizes Slack channel history day by day and stores each digest in the knowledge base — making channel conversations searchable by the agent.
+
+**Required Slack scopes** (add these in api.slack.com/apps → OAuth & Permissions if you haven't already):
+- `channels:history`, `groups:history`, `im:history`, `mpim:history`
+
+After adding scopes, reinstall the app to the workspace.
+
+### One-shot: summarize a channel on demand
+
+In any channel where the bot is invited:
+```
+@cuga summarize this channel from the past month and store in knowledge
+@cuga digest the last 7 days
+@cuga summarize this channel from the past week
+```
+
+Supported time periods: `past month` (30 days), `last week` / `past week` (7 days), `today` (1 day), `last N days`.
+
+The agent will report how many days were processed and stored. Digests are immediately queryable:
+```
+@cuga what was discussed in this channel last week?
+```
+
+### Scheduled: daily auto-digest
+
+```
+@cuga set a daily job to summarize this channel at 6pm
+@cuga every weekday at 5pm digest this channel
+```
+
+CUGA confirms the schedule and next run time. Each daily run summarizes the previous day's messages (`lookback_days=1`).
+
+To trigger the scheduled job immediately for testing:
+```
+/run channel-digest
+```
+
+### What gets stored
+
+Each digest is stored as a knowledge entry titled `channel-digest-<channel>-<YYYY-MM-DD>`. The agent can search across all stored digests when you ask questions like "what did the team decide about X last week?"
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
