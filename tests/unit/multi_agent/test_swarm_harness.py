@@ -105,6 +105,7 @@ class NotifyCollector:
 # Smoke test: chief_of_staff alone via _agent_task()
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 @pytest.mark.asyncio
 async def test_chief_of_staff_smoke():
     """Entry agent acks within 60 s with non-empty text. No workers involved."""
@@ -157,6 +158,7 @@ async def test_chief_of_staff_smoke():
 # Full swarm test via ConfigurationRunner
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 @pytest.mark.asyncio
 async def test_full_swarm_research():
     """Full pipeline: ack + at least one NOTIFY from web_searcher and fact_checker."""
