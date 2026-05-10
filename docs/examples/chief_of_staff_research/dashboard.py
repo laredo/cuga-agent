@@ -303,28 +303,11 @@ _HTML = r"""<!DOCTYPE html>
     font-size: 0.65rem; color: #63b3ed; font-weight: 700;
   }
 
-  /* ── Two-column main area ───────────────────────────────────────── */
+  /* ── Dispatch + notify stack ───────────────────────────────────── */
   .main-cols {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+    display: block;
     border-top: 1px solid #2d3748;
   }
-  .col-left  { border-right: 1px solid #2d3748; }
-
-  /* ── Tool activity feed ─────────────────────────────────────────── */
-  #tool-feed {
-    height: 300px; overflow-y: auto;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.7rem;
-    line-height: 1.5; padding: 10px 14px;
-  }
-  .tool-row {
-    display: flex; gap: 8px; align-items: baseline;
-    padding: 2px 0; border-bottom: 1px solid #1a1f2e;
-  }
-  .tool-agent  { font-weight: 700; min-width: 110px; }
-  .tool-dir    { opacity: .5; }
-  .tool-name   { color: #f6ad55; }
-  .tool-detail { color: #a0aec0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-  .tool-err    { color: #fc8181; }
 
   /* ── Dispatch stream ────────────────────────────────────────────── */
   #dispatch-feed {
@@ -415,32 +398,21 @@ _HTML = r"""<!DOCTYPE html>
   <div class="edges" id="edges-list"></div>
 </div>
 
-<!-- Two-column: tool activity + dispatch/notify -->
+<!-- Dispatch + notify -->
 <div class="main-cols">
-  <div class="col-left">
-    <div class="section">
-      <div class="section-title">
-        <span class="status-dot"></span>Tool calls
-        <span class="badge" id="tool-count">0</span>
-      </div>
-      <div id="tool-feed"></div>
+  <div class="section">
+    <div class="section-title">
+      <span class="status-dot"></span>Dispatches
+      <span class="badge" id="dispatch-count">0</span>
     </div>
+    <div id="dispatch-feed"></div>
   </div>
-  <div class="col-right">
-    <div class="section">
-      <div class="section-title">
-        <span class="status-dot"></span>Dispatches
-        <span class="badge" id="dispatch-count">0</span>
-      </div>
-      <div id="dispatch-feed"></div>
+  <div class="section" style="border-top:1px solid #2d3748">
+    <div class="section-title">
+      <span class="status-dot"></span>Slack notifications
+      <span class="badge" id="notify-count">0</span>
     </div>
-    <div class="section" style="border-top:1px solid #2d3748">
-      <div class="section-title">
-        <span class="status-dot"></span>Slack notifications
-        <span class="badge" id="notify-count">0</span>
-      </div>
-      <div id="notify-feed"></div>
-    </div>
+    <div id="notify-feed"></div>
   </div>
 </div>
 
@@ -465,7 +437,6 @@ let activeFilter = "";
 let logEs = null;
 let eventEs = null;
 let totalEvents = 0;
-let toolCount = 0;
 let dispatchCount = 0;
 let notifyCount = 0;
 
@@ -588,52 +559,18 @@ function handleEvent(ev) {
       setAgentState(ev.agent, "idle");
       break;
 
-    case "tool_start": {
+    case "tool_start":
       setAgentState(ev.agent, "tool", ev.tool);
-      toolCount++;
-      document.getElementById("tool-count").textContent = toolCount;
-      const feed = document.getElementById("tool-feed");
-      const row  = document.createElement("div");
-      row.className = "tool-row";
-      row.innerHTML =
-        `<span class="tool-agent" style="color:${agentColor(ev.agent)}">${ev.agent}</span>` +
-        `<span class="tool-dir">▶</span>` +
-        `<span class="tool-name">${ev.tool}</span>` +
-        `<span class="tool-detail">${escHtml(ev.input)}</span>`;
-      feed.appendChild(row);
-      feed.scrollTop = feed.scrollHeight;
       break;
-    }
 
-    case "tool_end": {
-      // Return to processing if still running, will go idle on task_ack
+    case "tool_end":
       if (agentState[ev.agent]?.state === "tool")
         setAgentState(ev.agent, "processing");
-      const feed = document.getElementById("tool-feed");
-      const row  = document.createElement("div");
-      row.className = "tool-row";
-      row.innerHTML =
-        `<span class="tool-agent" style="color:${agentColor(ev.agent)}">${ev.agent}</span>` +
-        `<span class="tool-dir" style="color:#68d391">◀</span>` +
-        `<span class="tool-detail" style="color:#718096">${escHtml(ev.output)}</span>`;
-      feed.appendChild(row);
-      feed.scrollTop = feed.scrollHeight;
       break;
-    }
 
-    case "tool_error": {
+    case "tool_error":
       setAgentState(ev.agent, "processing");
-      const feed = document.getElementById("tool-feed");
-      const row  = document.createElement("div");
-      row.className = "tool-row";
-      row.innerHTML =
-        `<span class="tool-agent" style="color:${agentColor(ev.agent)}">${ev.agent}</span>` +
-        `<span class="tool-dir">✗</span>` +
-        `<span class="tool-err">${escHtml(ev.error)}</span>`;
-      feed.appendChild(row);
-      feed.scrollTop = feed.scrollHeight;
       break;
-    }
 
     case "dispatch": {
       dispatchCount++;
@@ -666,13 +603,37 @@ function handleEvent(ev) {
 }
 
 // ── Structured event SSE ───────────────────────────────────────────────────
+let _eventEsConnected = false;
+
+function clearLiveFeeds() {
+  document.getElementById("dispatch-feed").innerHTML = "";
+  document.getElementById("notify-feed").innerHTML = "";
+  dispatchCount = 0; notifyCount = 0; totalEvents = 0;
+  document.getElementById("dispatch-count").textContent = "0";
+  document.getElementById("notify-count").textContent   = "0";
+  document.getElementById("event-count").textContent    = "0 events";
+  // Reset agent cards to idle
+  Object.keys(agentState).forEach(id => setAgentState(id, "idle"));
+}
+
 function startEventStream() {
   if (eventEs) eventEs.close();
+  _eventEsConnected = false;
   eventEs = new EventSource("/api/events");
+  eventEs.onopen = () => {
+    if (_eventEsConnected) {
+      // Reconnect after a gap — server likely restarted
+      clearLiveFeeds();
+    }
+    _eventEsConnected = true;
+  };
   eventEs.onmessage = e => {
     try { handleEvent(JSON.parse(e.data)); } catch (_) {}
   };
-  eventEs.onerror = () => setTimeout(startEventStream, 2000);
+  eventEs.onerror = () => {
+    _eventEsConnected = false;
+    setTimeout(startEventStream, 2000);
+  };
 }
 
 // ── Raw log SSE ────────────────────────────────────────────────────────────

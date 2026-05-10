@@ -98,6 +98,12 @@ class AgentFactory:
         documents.  The agent_id is logged for traceability but is not used
         as the KB scope — intentional: fact_checker:: / web_searcher:: prefixes
         in document titles carry provenance, not the KB namespace.
+
+        Also eagerly injects KB LangChain tools into the agent's tool_provider.
+        The swarm pattern calls ``agent.graph.ainvoke()`` directly, bypassing
+        ``agent.invoke()`` which would trigger the lazy ``_ensure_initialized``
+        auto-injection.  We therefore must inject the tools now, before the
+        compiled graph is first accessed.
         """
         if self._shared_kb_engine is None:
             logger.warning(
@@ -107,12 +113,40 @@ class AgentFactory:
         try:
             from cuga.backend.knowledge.client import KnowledgeClient
 
-            agent._knowledge_client = KnowledgeClient(
+            client = KnowledgeClient(
                 self._shared_kb_engine, default_agent_id=self._config.name
             )
+            agent._knowledge_client = client
             logger.info(
                 f"KB scoped to topology '{self._config.name}' for agent '{agent_id}'"
             )
+
+            # Eagerly add KB tools to the tool provider so they are available
+            # when the graph is compiled (which happens on first ainvoke).
+            try:
+                from cuga.backend.cuga_graph.nodes.cuga_lite.direct_langchain_tools_provider import (
+                    DirectLangChainToolsProvider,
+                )
+
+                if isinstance(agent.tool_provider, DirectLangChainToolsProvider):
+                    kb_tools = client.get_langchain_tools()
+                    existing_names = {t.name for t in agent.tool_provider.tools}
+                    new_tools = [t for t in kb_tools if t.name not in existing_names]
+                    if new_tools:
+                        agent.tool_provider.add_tools(new_tools)
+                        logger.info(
+                            f"Eagerly injected {len(new_tools)} KB tools for agent '{agent_id}': "
+                            f"{[t.name for t in new_tools]}"
+                        )
+                    else:
+                        logger.warning(
+                            f"KB tools already present or empty for agent '{agent_id}'"
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"Could not eagerly inject KB tools for '{agent_id}': {e}"
+                )
+
         except Exception as e:
             logger.warning(
                 f"Could not inject KB scope for '{agent_id}' — falling back to default: {e}"
