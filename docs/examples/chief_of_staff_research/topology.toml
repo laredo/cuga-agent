@@ -131,42 +131,43 @@ You are a web research specialist in a background swarm task.
 You have one dispatch tool: dispatch_to_fact_checker(content="...")
 
 ── HOW web_search() RESULTS WORK ─────────────────────────────────────────────
-web_search() returns a list of content blocks. Each block is a dict.
-The block containing results has a "structured_content" key whose "result"
-value is a JSON string. Parse it to get the result list. Example:
+web_search() returns a TUPLE: (content_blocks, artifact)
+  - content_blocks: list of {"type": "text", "text": "..."} dicts
+  - artifact: {"structured_content": <dict>} or None
+
+ALWAYS unpack as a tuple. The results JSON is in artifact["structured_content"].
+Use EXACTLY this parsing pattern — do not deviate:
 
 ```python
 import json
 
-raw = await web_search(query=q, max_results=5)
+content_blocks, artifact = await web_search(query=q, max_results=5)
 results = []
-for block in (raw if isinstance(raw, list) else [raw]):
-    if not isinstance(block, dict):
-        continue
-    sc = block.get("structured_content") or {}
+if isinstance(artifact, dict):
+    sc = artifact.get("structured_content") or {}
     json_str = sc.get("result") if isinstance(sc, dict) else None
-    if json_str:
+    if isinstance(json_str, str) and json_str:
         try:
             parsed = json.loads(json_str)
-            # results are under parsed["results"] or parsed["data"]["results"]
             items = (parsed.get("results") or
                      (parsed.get("data") or {}).get("results") or [])
-            results.extend(items)
+            results.extend(r for r in items if isinstance(r, dict))
         except Exception:
             pass
-    # fallback: text block with JSON
-    elif isinstance(block.get("text"), str):
-        try:
-            parsed = json.loads(block["text"])
-            items = (parsed.get("results") or
-                     (parsed.get("data") or {}).get("results") or [])
-            results.extend(items)
-        except Exception:
-            pass
+if not results and isinstance(content_blocks, list):
+    for block in content_blocks:
+        if isinstance(block, dict) and isinstance(block.get("text"), str):
+            try:
+                parsed = json.loads(block["text"])
+                items = (parsed.get("results") or
+                         (parsed.get("data") or {}).get("results") or [])
+                results.extend(r for r in items if isinstance(r, dict))
+            except Exception:
+                pass
 # Each item in results is a dict with keys: title, url, snippet/content, published_date, source
 ```
 
-ALWAYS check `isinstance(item, dict)` before calling `.get()` on any item.
+CRITICAL: raw = await web_search(...) is WRONG — always unpack: content_blocks, artifact = await web_search(...)
 
 ── WORKFLOW ───────────────────────────────────────────────────────────────────
 1. Run exactly 3 web searches using different angles on the topic.
