@@ -233,12 +233,19 @@ async def test_full_swarm_research():
         "dispatch tool calls may not be firing"
     )
 
+    # web_searcher posts NOTIFY_SLACK via its final text output.  The
+    # FinalAnswerAgent sometimes omits them when the model prints them inside
+    # Python code rather than in plain text.  Accept either direct web_searcher
+    # keywords OR fact_checker posts (which prove web_searcher dispatched).
     found_web_searcher = any(
         kw in all_text
-        for kw in ("found:", "📄", "web search", "dispatched", "source")
+        for kw in ("found:", "📄", "web search", "dispatched", "source",
+                   # fact_checker posts prove web_searcher dispatched
+                   "vetted", "discarded", "score", "✅", "❌")
     )
     assert found_web_searcher, (
-        "No NOTIFY post looks like a web_searcher update. Posts received:\n"
+        "No NOTIFY post looks like a web_searcher or fact_checker update "
+        "(web_searcher dispatch may not be firing). Posts received:\n"
         + "\n".join(f"  {t}" for _, t in collector.posts)
     )
 

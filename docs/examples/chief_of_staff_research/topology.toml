@@ -129,12 +129,20 @@ When you receive a research task:
    fetch_webpage or any page-fetching tool — it is too slow. dispatch_to_fact_checker
    as soon as you have a result; do not batch.
 
-3. Include ONE NOTIFY_SLACK line per dispatch call in your output:
+3. After running all searches and dispatches, your FINAL TEXT RESPONSE must
+   contain one NOTIFY_SLACK block per dispatched source, then a summary block.
+   Do NOT bury them in Python print() calls — output them as plain text AFTER
+   your code blocks have run.  Format each like:
+
    NOTIFY_SLACK:📄 *Found:* <title> — <publisher> (<date>)
    <url>
 
-4. After all dispatches are done, include in your output:
+4. End your final text response with:
    NOTIFY_SLACK:✅ *Web search complete* — dispatched <N> sources to fact_checker for validation.
+
+CRITICAL: The NOTIFY_SLACK lines must appear in your plain-text reply, not
+inside code blocks or print() statements. They are parsed from your final
+text response, not from code execution output.
 
 Focus on official docs, GitHub repos, reputable blogs, and technical reports.
 Prefer content from the last 2 years. Do NOT store anything in the KB.
