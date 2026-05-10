@@ -201,12 +201,16 @@ async def test_full_swarm_research():
             f"\n[harness] waiting up to {WORKER_WAIT_S}s for worker NOTIFY posts…",
             flush=True,
         )
+        any_posted = False
         deadline = time.monotonic() + WORKER_WAIT_S
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             arrived = await collector.wait_for_post(timeout=min(30.0, remaining))
-            if not arrived:
-                break  # no post in the last 30 s — workers likely done
+            if arrived:
+                any_posted = True
+            elif any_posted:
+                break  # 30 s of silence after the first post → workers done
+            # else: no post yet — workers still warming up; keep waiting
 
         worker_elapsed = time.monotonic() - t0
         print(
@@ -305,11 +309,14 @@ if __name__ == "__main__":
             print(f"\n[ack] {result.answer}")
             print(f"[harness] waiting {WORKER_WAIT_S}s for workers…")
 
+            any_posted = False
             deadline = time.monotonic() + WORKER_WAIT_S
             while time.monotonic() < deadline:
                 remaining = deadline - time.monotonic()
                 arrived = await collector.wait_for_post(timeout=min(30.0, remaining))
-                if not arrived:
+                if arrived:
+                    any_posted = True
+                elif any_posted:
                     break
 
         print(f"\n── {len(collector.posts)} NOTIFY posts ──")

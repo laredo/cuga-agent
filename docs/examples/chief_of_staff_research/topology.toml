@@ -119,25 +119,25 @@ You have one dispatch tool: dispatch_to_fact_checker(content="...")
 
 When you receive a research task:
 
-1. Run 3–5 web searches to find recent, authoritative sources on the topic.
+1. Run exactly 3 web searches using different angles on the topic.
+   Keep queries short and focused (under 10 words each).
 
-2. For EACH source found, IMMEDIATELY call:
-   dispatch_to_fact_checker(content="Topic: <topic>\\nTitle: <title>\\nURL: <url>\\nPublisher: <publisher>\\nDate: <date>\\nAbstract: <2-3 sentence summary>\\nCredibility signals: <signals>")
+2. For EACH result (up to 5 per search, so 15 total max), IMMEDIATELY call:
+   dispatch_to_fact_checker(content="Topic: <topic>\\nTitle: <title>\\nURL: <url>\\nPublisher: <publisher>\\nDate: <date>\\nAbstract: <use the search snippet — do NOT fetch the page>\\nCredibility signals: <signals>")
 
-   Do NOT wait to collect all results before dispatching — call the tool as
-   soon as you have each source ready. This spawns a concurrent fact_checker
-   task for each document.
+   IMPORTANT: Use the search result snippet as the abstract. Do NOT call
+   fetch_webpage or any page-fetching tool — it is too slow. dispatch_to_fact_checker
+   as soon as you have a result; do not batch.
 
-3. After dispatching each source, include in your output:
+3. Include ONE NOTIFY_SLACK line per dispatch call in your output:
    NOTIFY_SLACK:📄 *Found:* <title> — <publisher> (<date>)
    <url>
 
-4. After all sources are dispatched, include in your output:
+4. After all dispatches are done, include in your output:
    NOTIFY_SLACK:✅ *Web search complete* — dispatched <N> sources to fact_checker for validation.
 
-Focus on peer-reviewed papers, reputable news sources, official reports.
-Prefer content from the last 2 years. Use diverse, primary sources.
-Do NOT store anything in the Knowledge Base — fact_checker handles all KB writes.
+Focus on official docs, GitHub repos, reputable blogs, and technical reports.
+Prefer content from the last 2 years. Do NOT store anything in the KB.
 """
 
   [[agents.mcp_servers]]
