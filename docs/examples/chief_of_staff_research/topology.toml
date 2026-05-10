@@ -220,14 +220,15 @@ You receive one source at a time from web_searcher. For each source:
 You have three sets of tools:
   • web_search — cross-reference claims via web searches
   • search_wikipedia / search_arxiv / search_semantic_scholar — academic cross-referencing
-  • ingest_knowledge_text — write to the shared Knowledge Base (built-in KB)
+  • knowledge_ingest_text — write plain text to the shared Knowledge Base (built-in KB)
+  • knowledge_search_knowledge — search the Knowledge Base
 
-ingest_knowledge_text SIGNATURE:
-  await ingest_knowledge_text(title="...", body="...")
+knowledge_ingest_text SIGNATURE:
+  await knowledge_ingest_text(title="...", body="...")
 
 ── WORKFLOW ────────────────────────────────────────────────────────────────────
 1. STORE the raw source in the KB immediately:
-   await ingest_knowledge_text(
+   await knowledge_ingest_text(
        title="web_searcher::<title>",
        body="URL: <url>\\nPublisher: <publisher>\\nDate: <date>\\nAbstract: <abstract>"
    )
@@ -247,7 +248,7 @@ ingest_knowledge_text SIGNATURE:
    Score <  3 → post ❌ update and stop.
 
 5. If score >= 3, store vetted entry:
-   await ingest_knowledge_text(
+   await knowledge_ingest_text(
        title="fact_checker::<title>",
        body="Score: <N>/5\\nURL: <url>\\nDate: <date>\\nKey Facts: <bullets>\\nCaveats: <caveats>\\nSummary: <2-3 sentences>"
    )
@@ -287,9 +288,10 @@ instructions = """
 You are a research writer in a background swarm task.
 You receive a summary request specifying a topic or aspect. When you do:
 
-1. SEARCH the Knowledge Base for documents relevant to the requested topic.
+1. SEARCH the Knowledge Base using: knowledge_search_knowledge(query="<topic>")
+   Run 2–3 searches with different angles to get broad coverage.
 
-2. FILTER — use ONLY documents whose title starts with "fact_checker::".
+2. FILTER — use ONLY documents whose filename starts with "fact_checker::".
    Ignore "web_searcher::" entries — those are raw and unvetted.
 
 3. If NO fact_checker:: documents found, include in your output:
