@@ -29,6 +29,7 @@ The entry agent's plain-text output (non-NOTIFY lines) becomes the Slack ack.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
 from loguru import logger
@@ -88,7 +89,12 @@ def _parse_slack_notifications(raw: str) -> Tuple[str, List[str]]:
     if in_notify:
         _flush_notify()
 
-    return "\n".join(leftover_lines).strip(), notify_texts
+    leftover = "\n".join(leftover_lines).strip()
+    # Strip markdown code fences from the entry-agent ack — raw Python code
+    # must never be posted to Slack.  This happens when CugaLite's router
+    # returns the last model-generated code block as the "final answer".
+    leftover = re.sub(r"```[^\n]*\n.*?```", "", leftover, flags=re.DOTALL).strip()
+    return leftover, notify_texts
 
 
 # ---------------------------------------------------------------------------
@@ -108,44 +114,44 @@ async def _agent_task(
     callbacks: Optional[List[Any]] = None,
 ) -> None:
     """Invoke one agent on one message, parse NOTIFY_SLACK: and post updates."""
-    logger.info(f"[swarm:{agent_id}#{msg_index}] processing ({len(content)} chars)")
+    # Bind agent name to every log line for this task (ainvoke AND post-processing)
+    # so the dashboard's per-agent raw-log filter works across the full execution.
+    with logger.contextualize(agent=agent_id):
+        logger.info(f"[swarm:{agent_id}#{msg_index}] processing ({len(content)} chars)")
 
-    invoke_config: Dict[str, Any] = {
-        "configurable": {"thread_id": f"{task_id}-{agent_id}-{msg_index}"},
-        "tags": [agent_id],
-    }
-    if callbacks:
-        invoke_config["callbacks"] = callbacks
+        invoke_config: Dict[str, Any] = {
+            "configurable": {"thread_id": f"{task_id}-{agent_id}-{msg_index}"},
+            "tags": [agent_id],
+        }
+        if callbacks:
+            invoke_config["callbacks"] = callbacks
 
-    # Bind the agent name to every log line emitted during ainvoke so that the
-    # dashboard's per-agent raw-log filter can distinguish agents.
-    try:
-        with logger.contextualize(agent=agent_id):
+        try:
             result = await asyncio.wait_for(
                 agent.graph.ainvoke(_build_graph_state(content), config=invoke_config),
                 timeout=float(timeout),
             )
-    except asyncio.TimeoutError:
-        logger.warning(f"[swarm:{agent_id}#{msg_index}] timed out after {timeout}s")
+        except asyncio.TimeoutError:
+            logger.warning(f"[swarm:{agent_id}#{msg_index}] timed out after {timeout}s")
+            if is_entry and first_response_queue is not None:
+                await first_response_queue.put("⏳ Request received — working in the background.")
+            return
+        except Exception as exc:
+            logger.error(f"[swarm:{agent_id}#{msg_index}] error: {exc}")
+            if is_entry and first_response_queue is not None:
+                await first_response_queue.put(f"❌ Error starting swarm: {exc}")
+            return
+
+        answer = _extract_answer(result)
+        leftover, notify_texts = _parse_slack_notifications(answer)
+
+        if slack_poster:
+            for text in notify_texts:
+                asyncio.create_task(_safe_post(slack_poster, text, agent_id))
+
         if is_entry and first_response_queue is not None:
-            await first_response_queue.put("⏳ Request received — working in the background.")
-        return
-    except Exception as exc:
-        logger.error(f"[swarm:{agent_id}#{msg_index}] error: {exc}")
-        if is_entry and first_response_queue is not None:
-            await first_response_queue.put(f"❌ Error starting swarm: {exc}")
-        return
-
-    answer = _extract_answer(result)
-    leftover, notify_texts = _parse_slack_notifications(answer)
-
-    if slack_poster:
-        for text in notify_texts:
-            asyncio.create_task(_safe_post(slack_poster, text, agent_id))
-
-    if is_entry and first_response_queue is not None:
-        await first_response_queue.put(leftover or "_Working on it…_")
-        logger.info(f"[swarm:{agent_id}#{msg_index}] ack posted to Slack")
+            await first_response_queue.put(leftover or "_Working on it…_")
+            logger.info(f"[swarm:{agent_id}#{msg_index}] ack posted to Slack")
 
 
 async def _safe_post(poster: SlackPoster, text: str, agent_id: str) -> None:
