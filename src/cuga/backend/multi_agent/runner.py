@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from cuga.backend.multi_agent.agent_bus import AgentBus
 from cuga.backend.multi_agent.config import MultiAgentConfig
 from cuga.backend.multi_agent.patterns.pipeline import RunResult, run_pipeline
 from cuga.backend.multi_agent.patterns.peer_to_peer import run_peer_to_peer
 from cuga.backend.multi_agent.patterns.supervisor import run_supervisor
+from cuga.backend.multi_agent.patterns.swarm import run_swarm
 from cuga.backend.multi_agent.task_state import TaskState
 from cuga.backend.skills.loader import discover_skills
+
+SlackPoster = Optional[Callable[[str], Coroutine[Any, Any, None]]]
 
 
 class ConfigurationRunner:
@@ -18,21 +21,30 @@ class ConfigurationRunner:
         self,
         config: MultiAgentConfig,
         agents: Optional[Dict[str, Any]] = None,
+        callbacks: Optional[List[Any]] = None,
+        agent_queues: Optional[Dict[str, Any]] = None,
     ):
         self._config = config
         self._agents = agents or {}
+        self._callbacks = callbacks or []
+        self._agent_queues = agent_queues  # EventQueue per agent, required for swarm
         self._last_task_state: Optional[TaskState] = None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    async def run(self, request: str, task_id: str) -> RunResult:
+    async def run(
+        self,
+        request: str,
+        task_id: str,
+        slack_poster: SlackPoster = None,
+    ) -> RunResult:
         task_state = TaskState(task_id=task_id)
         self._last_task_state = task_state
 
         try:
-            result = await self._dispatch(request, task_id, task_state)
+            result = await self._dispatch(request, task_id, task_state, slack_poster)
         finally:
             task_state.complete()
 
@@ -42,11 +54,7 @@ class ConfigurationRunner:
         bus = AgentBus()
         for agent_cfg in self._config.agents:
             peers = agent_cfg.peers if agent_cfg.peers else []
-            bus.register(
-                agent_cfg.id,
-                _make_noop_handler(),
-                peers=peers if peers else [],
-            )
+            bus.register(agent_cfg.id, _make_noop_handler(), peers=peers)
         return bus
 
     # ------------------------------------------------------------------
@@ -54,7 +62,11 @@ class ConfigurationRunner:
     # ------------------------------------------------------------------
 
     async def _dispatch(
-        self, request: str, task_id: str, task_state: TaskState
+        self,
+        request: str,
+        task_id: str,
+        task_state: TaskState,
+        slack_poster: SlackPoster = None,
     ) -> RunResult:
         pattern = self._config.pattern
 
@@ -65,6 +77,19 @@ class ConfigurationRunner:
                 request=request,
                 task_id=task_id,
                 task_state=task_state,
+                callbacks=self._callbacks or None,
+            )
+
+        if pattern == "swarm":
+            return await run_swarm(
+                config=self._config,
+                agents=self._agents,
+                request=request,
+                task_id=task_id,
+                task_state=task_state,
+                agent_queues=self._agent_queues,
+                slack_poster=slack_poster,
+                callbacks=self._callbacks or None,
             )
 
         if pattern == "peer_to_peer":

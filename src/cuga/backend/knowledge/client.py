@@ -83,6 +83,41 @@ class KnowledgeClient:
         collection = self._resolve_collection(scope, thread_id)
         return await self._engine.ingest(collection, Path(file_path), replace_duplicates)
 
+    async def ingest_text(
+        self,
+        title: str,
+        body: str,
+        scope: str = "agent",
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Ingest plain text directly into the knowledge base.
+
+        Writes the content to a temporary Markdown file under the given title
+        and ingests it, so agents can store structured notes without needing
+        file-system access in the code sandbox.
+        """
+        import tempfile
+        from pathlib import Path
+
+        safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", title)[:80]
+        collection = self._resolve_collection(scope, thread_id)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".md",
+            prefix=f"{safe_name}_",
+            delete=False,
+            encoding="utf-8",
+        ) as fh:
+            fh.write(f"# {title}\n\n{body}\n")
+            tmp_path = Path(fh.name)
+        try:
+            return await self._engine.ingest(collection, tmp_path, replace_duplicates=True)
+        finally:
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
     async def ingest_url(
         self,
         url: str,
@@ -179,6 +214,13 @@ class KnowledgeClient:
         async def knowledge_ingest_knowledge_url(url: str, scope: str = default_scope) -> dict:
             return await client.ingest_url(url, scope, thread_id=_thread_id)
 
+        async def knowledge_ingest_text(
+            title: str,
+            body: str,
+            scope: str = default_scope,
+        ) -> dict:
+            return await client.ingest_text(title, body, scope, thread_id=_thread_id)
+
         async def knowledge_list_knowledge_documents(scope: str = default_scope) -> dict:
             docs = await client.list_documents(scope, thread_id=_thread_id)
             return {"documents": docs}
@@ -224,6 +266,11 @@ class KnowledgeClient:
         knowledge_delete_knowledge_document.__doc__ = (
             f"Delete a document from the knowledge base by filename.\n\n{scope_help}"
         )
+        knowledge_ingest_text.__doc__ = (
+            "Ingest plain text directly into the knowledge base.\n\n"
+            "Provide a title and body string; no file needed. The content is stored "
+            f"as a Markdown document under the given title. {scope_help}"
+        )
 
         tools = [
             StructuredTool.from_function(
@@ -240,6 +287,11 @@ class KnowledgeClient:
                 coroutine=knowledge_ingest_knowledge_url,
                 name="knowledge_ingest_knowledge_url",
                 description=knowledge_ingest_knowledge_url.__doc__,
+            ),
+            StructuredTool.from_function(
+                coroutine=knowledge_ingest_text,
+                name="knowledge_ingest_text",
+                description=knowledge_ingest_text.__doc__,
             ),
             StructuredTool.from_function(
                 coroutine=knowledge_list_knowledge_documents,

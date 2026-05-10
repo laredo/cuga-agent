@@ -23,8 +23,15 @@ class AgentFactory:
     def __init__(self, config: "MultiAgentConfig"):
         self._config = config
         self.agents: Dict[str, Any] = {}
+        # Single shared KnowledgeEngine for all agents in this topology.
+        # All agents run in the same process; creating multiple KnowledgeEngine
+        # instances against the same SQLite file causes locking errors.  One
+        # engine + one KnowledgeClient per agent (different default_agent_id)
+        # gives each agent its own namespace while sharing the underlying store.
+        self._shared_kb_engine: Optional[Any] = None
 
     async def __aenter__(self) -> "AgentFactory":
+        self._shared_kb_engine = self._create_kb_engine()
         for agent_cfg in self._config.agents:
             self.agents[agent_cfg.id] = await self._build_agent(agent_cfg)
         return self
@@ -39,10 +46,111 @@ class AgentFactory:
 
         tools = await self._load_mcp_tools(agent_cfg.mcp_servers)
 
-        return CugaAgent(
+        agent = CugaAgent(
             tools=tools or None,
             special_instructions=agent_cfg.instructions,
+            enable_knowledge=agent_cfg.enable_knowledge,
         )
+
+        # Inject a pre-built KnowledgeClient so all KB-enabled agents share
+        # the same engine (and thus the same SQLite file) without conflicts.
+        # Each agent gets its own default_agent_id for namespace isolation.
+        if agent_cfg.enable_knowledge:
+            self._inject_kb_scope(agent, agent_cfg.id)
+
+        return agent
+
+    def _create_kb_engine(self) -> Optional[Any]:
+        """Create the single shared KnowledgeEngine for this topology.
+
+        Forces ``enabled=True`` so that ``KnowledgeClient.allowed_scopes()``
+        returns non-empty scopes and ``get_langchain_tools()`` actually produces
+        tools.  Without this, the global KnowledgeConfig default (enabled=False)
+        causes the client to return an empty tool list even when the topology
+        declares ``enable_knowledge = true``.
+        """
+        try:
+            from cuga.backend.knowledge.engine import KnowledgeEngine
+            from cuga.backend.knowledge.config import KnowledgeConfig
+            from cuga.config import settings
+            import dataclasses
+
+            config = KnowledgeConfig.from_settings(settings)
+            # Topology explicitly requested KB — ensure it is active regardless
+            # of the global enable flag in user settings.
+            if not config.enabled:
+                config = dataclasses.replace(config, enabled=True)
+
+            engine = KnowledgeEngine(config)
+            logger.info(
+                f"Shared KB engine created for topology '{self._config.name}'"
+            )
+            return engine
+        except Exception as e:
+            logger.warning(f"Could not create shared KB engine: {e}")
+            return None
+
+    def _inject_kb_scope(self, agent: Any, agent_id: str) -> None:
+        """Wire the shared KnowledgeEngine into this agent's KnowledgeClient.
+
+        Uses the topology name as the default_agent_id so every agent in the
+        topology writes to the same KB namespace and can read each other's
+        documents.  The agent_id is logged for traceability but is not used
+        as the KB scope — intentional: fact_checker:: / web_searcher:: prefixes
+        in document titles carry provenance, not the KB namespace.
+
+        Also eagerly injects KB LangChain tools into the agent's tool_provider.
+        The swarm pattern calls ``agent.graph.ainvoke()`` directly, bypassing
+        ``agent.invoke()`` which would trigger the lazy ``_ensure_initialized``
+        auto-injection.  We therefore must inject the tools now, before the
+        compiled graph is first accessed.
+        """
+        if self._shared_kb_engine is None:
+            logger.warning(
+                f"No shared KB engine — agent '{agent_id}' falls back to default KB"
+            )
+            return
+        try:
+            from cuga.backend.knowledge.client import KnowledgeClient
+
+            client = KnowledgeClient(
+                self._shared_kb_engine, default_agent_id=self._config.name
+            )
+            agent._knowledge_client = client
+            logger.info(
+                f"KB scoped to topology '{self._config.name}' for agent '{agent_id}'"
+            )
+
+            # Eagerly add KB tools to the tool provider so they are available
+            # when the graph is compiled (which happens on first ainvoke).
+            try:
+                from cuga.backend.cuga_graph.nodes.cuga_lite.direct_langchain_tools_provider import (
+                    DirectLangChainToolsProvider,
+                )
+
+                if isinstance(agent.tool_provider, DirectLangChainToolsProvider):
+                    kb_tools = client.get_langchain_tools()
+                    existing_names = {t.name for t in agent.tool_provider.tools}
+                    new_tools = [t for t in kb_tools if t.name not in existing_names]
+                    if new_tools:
+                        agent.tool_provider.add_tools(new_tools)
+                        logger.info(
+                            f"Eagerly injected {len(new_tools)} KB tools for agent '{agent_id}': "
+                            f"{[t.name for t in new_tools]}"
+                        )
+                    else:
+                        logger.warning(
+                            f"KB tools already present or empty for agent '{agent_id}'"
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"Could not eagerly inject KB tools for '{agent_id}': {e}"
+                )
+
+        except Exception as e:
+            logger.warning(
+                f"Could not inject KB scope for '{agent_id}' — falling back to default: {e}"
+            )
 
     async def _load_mcp_tools(
         self, mcp_servers: List["MCPServerConfig"]

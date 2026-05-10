@@ -168,7 +168,25 @@ class SlackEventProcessor:
 
                 if self._runner is not None:
                     logger.info(f"Invoking multi-agent runner for: {text[:50]}...")
-                    result = await self._runner.run(text, task_id=thread_id)
+
+                    # Build a poster so background swarm tasks can push updates
+                    # to this Slack thread without blocking the caller.
+                    _post_channel = response_channel
+                    _post_thread = response_thread_ts
+                    notification = self.notification
+
+                    async def slack_poster(msg_text: str) -> None:
+                        await notification.send_response(
+                            text=msg_text,
+                            channel=_post_channel,
+                            thread_ts=_post_thread,
+                        )
+
+                    result = await self._runner.run(
+                        text,
+                        task_id=thread_id,
+                        slack_poster=slack_poster,
+                    )
                 else:
                     logger.info(f"Invoking CUGA agent for message: {text[:50]}...")
                     result = await self.cuga_agent.invoke(
@@ -181,7 +199,7 @@ class SlackEventProcessor:
                 logger.info(f"CUGA response: {response_text[:100]}...")
 
             except Exception as e:
-                logger.error(f"Error invoking CUGA agent: {e}", exc_info=True)
+                logger.exception(f"Error invoking CUGA agent: {e}")
                 response_text = (
                     f"❌ Sorry, I encountered an error processing your request:\n"
                     f"```{str(e)}```\n\n"

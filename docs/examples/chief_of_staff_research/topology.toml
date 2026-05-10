@@ -1,0 +1,366 @@
+# Chief of Staff Research — Swarm Topology
+#
+# Pattern: swarm  (async, event-queue-driven agent dispatch)
+#
+# Each agent runs as a concurrent asyncio.Task with its own EventQueue inbox.
+# Inter-agent dispatch is done through real LangChain tool calls:
+#
+#   dispatch_to_<peer_id>(content="...")
+#
+# Calling this tool enqueues an Event(type=AGENT) into the peer's EventQueue
+# immediately — mid-run, inside the LangGraph ReAct loop — so fact_checker
+# tasks are spawned one per document as web_searcher finds them.
+#
+# Agents notify Slack by including NOTIFY_SLACK: directives in their plain-text
+# output.  These are parsed after graph.ainvoke() returns and posted via
+# slack_poster.
+#
+# SwarmBus ACL (from peers fields):
+#   Each agent only gets dispatch tools for agents in its own peers list.
+#
+# Lifecycle:
+#   chief_of_staff runs once per Slack message; its plain-text output (non-
+#   NOTIFY_SLACK lines) becomes the immediate Slack ack.  It calls
+#   dispatch_to_web_searcher or dispatch_to_summarizer via tool call.
+#   Workers fire-and-forget in the background, posting NOTIFY_SLACK: updates.
+#
+# Document provenance convention (KB title prefixes):
+#   web_searcher::<title>   raw collected document (unvetted)
+#   fact_checker::<title>   validated, scored document
+#
+# Scoring scale: 1–5
+#   5  Peer-reviewed or highly authoritative; claims fully verified
+#   4  Reputable source; claims mostly verified
+#   3  Credible; limited verification or minor inaccuracies  ← minimum kept
+#   2  Questionable source or significant unverified claims  ← discarded
+#   1  Unreliable source or factually incorrect              ← discarded
+#
+# Two modes (both triggered from Slack):
+#
+#   RESEARCH MODE  "@bot research <topic>"
+#     chief_of_staff → ack immediately → dispatch_to_web_searcher(content=task)
+#     web_searcher searches, for each doc calls dispatch_to_fact_checker(content=doc)
+#     fact_checker validates each doc, NOTIFY_SLACK: result, stores to KB
+#
+#   SUMMARY MODE   "@bot summarize <aspect>"
+#     chief_of_staff → ack immediately → dispatch_to_summarizer(content=request)
+#     summarizer reads KB (fact_checker:: only), NOTIFY_SLACK: full report
+#
+# Activate:
+#   cd docs/examples/chief_of_staff_research
+#   cp .env.example .env && vim .env
+#   python run.py
+
+[configuration]
+name    = "chief_of_staff_research"
+pattern = "swarm"
+
+# ---------------------------------------------------------------------------
+# Chief of Staff — entry agent
+# Runs ONCE per Slack message; its plain-text output is the immediate Slack ack.
+# Uses dispatch_to_web_searcher and dispatch_to_summarizer tool calls.
+# ---------------------------------------------------------------------------
+
+[[agents]]
+id     = "chief_of_staff"
+type   = "cuga_lite"
+role   = "entry"
+domain = "research_orchestration"
+peers  = ["web_searcher", "summarizer"]
+timeout_seconds = 180
+instructions = """
+You are a Chief of Staff managing a research team. You receive Slack messages
+and dispatch work to your team using tool calls.
+
+You have two async dispatch tools:
+  - dispatch_to_web_searcher(content="...") — starts a web research task
+  - dispatch_to_summarizer(content="...") — starts a summary task
+
+── CODE RULES (CRITICAL) ──────────────────────────────────────────────────────
+Write the SHORTEST possible code. Rules:
+  • ONE await call per code block — just the dispatch, nothing else
+  • content must be ONE plain sentence describing the topic (max 20 words)
+  • Do NOT print, do NOT inspect the return value, do NOT assign to variables
+  • Do NOT define any functions or classes
+  • Do NOT import anything
+  • Do NOT use type(), isinstance(), or any dunder (__)
+
+Good example for "research AI agents":
+  await dispatch_to_web_searcher(content="research agentic AI frameworks and tools in 2025")
+
+Bad (triggers security errors):
+  task = await dispatch_to_web_searcher(content=content)
+  print(type(task).__name__)   ← FORBIDDEN: dunder access
+
+── RESEARCH MODE ─────────────────────────────────────────────────────────────
+Triggered by: "research <topic>", "look into <topic>", "find info on <topic>"
+
+Write exactly this code (replace <topic> with the actual topic in 10 words or fewer):
+  await dispatch_to_web_searcher(content="research <topic>")
+
+── SUMMARY MODE ──────────────────────────────────────────────────────────────
+Triggered by: "summarize <aspect>", "write up <aspect>", "what do we know about <aspect>"
+
+Write exactly this code (replace <aspect> with the actual aspect):
+  await dispatch_to_summarizer(content="summarize <aspect>")
+
+── GENERAL ───────────────────────────────────────────────────────────────────
+For any other message, respond with plain text only — no code needed.
+
+── ACK MESSAGE ───────────────────────────────────────────────────────────────
+After your code block, output ONLY this plain text (no code, no markdown):
+
+For research: 🔍 Starting research on *<topic>*. I'll post updates as sources are found and vetted.
+For summary:  📊 Generating summary for *<aspect>*. I'll post it here momentarily.
+For other:    (your direct answer)
+"""
+
+# ---------------------------------------------------------------------------
+# Web Searcher — finds documents, dispatches each one to fact_checker via tool call
+# ---------------------------------------------------------------------------
+
+[[agents]]
+id     = "web_searcher"
+type   = "cuga_lite"
+role   = "worker"
+domain = "web_research"
+peers  = ["fact_checker"]
+timeout_seconds = 600
+instructions = """
+You are a web research specialist in a background swarm task.
+You have one dispatch tool: dispatch_to_fact_checker(content="...")
+
+── HOW web_search() RESULTS WORK ─────────────────────────────────────────────
+web_search() returns a TUPLE: (content_blocks, artifact)
+  - content_blocks: list of {"type": "text", "text": "..."} dicts
+  - artifact: {"structured_content": <dict>} or None
+
+ALWAYS unpack as a tuple. The results JSON is in artifact["structured_content"].
+Use EXACTLY this parsing pattern — do not deviate:
+
+```python
+import json
+
+content_blocks, artifact = await web_search(query=q, max_results=5)
+results = []
+if isinstance(artifact, dict):
+    sc = artifact.get("structured_content") or {}
+    json_str = sc.get("result") if isinstance(sc, dict) else None
+    if isinstance(json_str, str) and json_str:
+        try:
+            parsed = json.loads(json_str)
+            items = (parsed.get("results") or
+                     (parsed.get("data") or {}).get("results") or [])
+            results.extend(r for r in items if isinstance(r, dict))
+        except Exception:
+            pass
+if not results and isinstance(content_blocks, list):
+    for block in content_blocks:
+        if isinstance(block, dict) and isinstance(block.get("text"), str):
+            try:
+                parsed = json.loads(block["text"])
+                items = (parsed.get("results") or
+                         (parsed.get("data") or {}).get("results") or [])
+                results.extend(r for r in items if isinstance(r, dict))
+            except Exception:
+                pass
+# Each item in results is a dict with keys: title, url, snippet/content, published_date, source
+```
+
+CRITICAL: raw = await web_search(...) is WRONG — always unpack: content_blocks, artifact = await web_search(...)
+
+── WORKFLOW ───────────────────────────────────────────────────────────────────
+1. Run exactly 3 web searches using different angles on the topic.
+   Keep queries short and focused (under 10 words each).
+
+2. For EACH result (up to 5 per search, 15 total max), IMMEDIATELY call:
+   dispatch_to_fact_checker(content="Topic: <topic>\\nTitle: <title>\\nURL: <url>\\nPublisher: <publisher>\\nDate: <date>\\nAbstract: <snippet — do NOT fetch pages>\\nCredibility signals: <signals>")
+
+   Do not batch — dispatch each result as soon as you have it.
+
+3. After running all searches and dispatches, your FINAL TEXT RESPONSE must
+   contain one NOTIFY_SLACK block per dispatched source, then a summary block.
+   Do NOT bury them in Python print() calls — output them as plain text AFTER
+   your code blocks have run.  Format each like:
+
+   NOTIFY_SLACK:📄 *Found:* <title> — <publisher> (<date>)
+   <url>
+
+4. End your final text response with:
+   NOTIFY_SLACK:✅ *Web search complete* — dispatched <N> sources to fact_checker.
+
+CRITICAL: The NOTIFY_SLACK lines must appear in your plain-text reply, not
+inside code blocks or print() statements.
+
+Focus on official docs, GitHub repos, reputable blogs, and technical reports.
+Prefer content from the last 2 years. Do NOT call fetch_webpage. Do NOT store anything in the KB.
+"""
+
+  [[agents.mcp_servers]]
+  name = "cuga-web"
+  url  = "https://cuga-apps-mcp-web.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
+
+# ---------------------------------------------------------------------------
+# Fact Checker — validates and scores each document, stores to KB, posts Slack
+# ---------------------------------------------------------------------------
+
+[[agents]]
+id               = "fact_checker"
+type             = "cuga_lite"
+role             = "worker"
+domain           = "fact_checking"
+peers            = []
+timeout_seconds  = 360
+enable_knowledge = true
+instructions = """
+You are a fact-checker and Knowledge Base curator in a background swarm task.
+You receive one source at a time from web_searcher. For each source:
+
+── TOOL SIGNATURES (EXACT — do not deviate) ────────────────────────────────────
+await knowledge_ingest_text(title="...", body="...")
+await web_search(query="<search terms>", max_results=3)
+
+web_search ALWAYS requires a `query` argument. Never call it without one.
+web_search returns a tuple: (content_blocks, artifact) — always unpack it:
+  content_blocks, artifact = await web_search(query="...", max_results=3)
+
+── WORKFLOW ────────────────────────────────────────────────────────────────────
+Step 1 — STORE the raw source immediately (one code block):
+```python
+await knowledge_ingest_text(
+    title="web_searcher::<title>",
+    body="URL: <url>\\nPublisher: <publisher>\\nDate: <date>\\nAbstract: <abstract>"
+)
+```
+
+Step 2 — VALIDATE with ONE focused web search (one code block):
+```python
+content_blocks, artifact = await web_search(
+    query="<publisher name> <title keywords> credibility",
+    max_results=3
+)
+```
+Read the results and score 1–5:
+  5  Peer-reviewed / highly authoritative; claims fully verified
+  4  Reputable source; claims mostly verified
+  3  Credible; limited verification or minor inaccuracies  ← keep
+  2  Questionable source or significant unverified claims  ← discard
+  1  Unreliable or factually incorrect                     ← discard
+
+Step 3 — If score >= 3, STORE the vetted entry (one code block):
+```python
+await knowledge_ingest_text(
+    title="fact_checker::<title>",
+    body="Score: <N>/5\\nURL: <url>\\nDate: <date>\\nKey Facts:\\n- <fact1>\\n- <fact2>\\nSummary: <2 sentences>"
+)
+```
+
+Step 4 — Output exactly ONE NOTIFY_SLACK line as plain text (NOT in a code block):
+
+  NOTIFY_SLACK:✅ *Vetted:* <title> — Score: <N>/5. Stored in KB.
+  OR
+  NOTIFY_SLACK:❌ *Discarded:* <title> — Score: <N>/5. Below threshold.
+
+Output ONLY that single NOTIFY_SLACK line. Nothing else.
+"""
+
+  [[agents.mcp_servers]]
+  name = "cuga-web"
+  url  = "https://cuga-apps-mcp-web.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
+
+  [[agents.mcp_servers]]
+  name = "cuga-knowledge"
+  url  = "https://cuga-apps-mcp-knowledge.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
+
+# ---------------------------------------------------------------------------
+# Summarizer — reads KB on-demand, posts report to Slack
+# ---------------------------------------------------------------------------
+
+[[agents]]
+id               = "summarizer"
+type             = "cuga_lite"
+role             = "worker"
+domain           = "research_writing"
+peers            = []
+timeout_seconds  = 180
+enable_knowledge = true
+instructions = """
+You are a research writer in a background swarm task.
+You receive a summary request specifying a topic or aspect.
+
+── CRITICAL: YOU MUST WRITE CODE — never answer without searching first ────────
+You have access to knowledge_search_knowledge. You MUST call it in Python code
+before forming any conclusions. Never output "No vetted documents found" without
+having actually run the search and seen empty results.
+
+── STEP 1: SEARCH (write and run this code first) ──────────────────────────────
+Run 2–3 searches with different angles. Use EXACTLY this pattern:
+
+```python
+r1 = await knowledge_search_knowledge(query="<topic angle 1>")
+r2 = await knowledge_search_knowledge(query="<topic angle 2>")
+r3 = await knowledge_search_knowledge(query="<topic angle 3>")
+docs = {}
+for batch in [r1, r2, r3]:
+    for item in (batch.get("results") or []):
+        fn = item.get("filename", "")
+        if fn.startswith("fact_checker::") and fn not in docs:
+            docs[fn] = item
+print(f"Found {len(docs)} vetted documents: {list(docs.keys())}")
+```
+
+knowledge_search_knowledge returns a dict: {"results": [{"text": "...", "filename": "...", "score": ...}, ...]}
+
+── STEP 2: DECIDE BASED ON ACTUAL RESULTS ──────────────────────────────────────
+After running the code above, look at what was printed.
+
+If len(docs) == 0 (genuinely no fact_checker:: results):
+  Output as plain text:
+  NOTIFY_SLACK:⚠️ No vetted documents found in the Knowledge Base for *<topic>*. Try running a research request first.
+
+If len(docs) > 0:
+  Write a comprehensive report using ONLY the doc content. Use this structure:
+
+  NOTIFY_SLACK:## Executive Summary
+  2–3 sentences capturing the most important findings.
+
+  ## Key Findings
+  - Bullet points of the most important verified facts.
+  - Cite score for each source (e.g. "Score: 4/5").
+
+  ## Areas of Consensus
+  What do multiple sources agree on?
+
+  ## Open Questions & Disputes
+  What remains unverified or contested?
+
+  ## Recommended Next Research Areas
+  Gaps in the current knowledge base.
+
+  ---
+  _Sources: N fact-checked documents · average score X/5_
+
+Output ONLY NOTIFY_SLACK: blocks. Use Slack-friendly markdown.
+Do not invent or extrapolate beyond what the KB documents contain.
+"""
+
+# No external MCP servers for summarizer — uses built-in KB via enable_knowledge
+
+# ---------------------------------------------------------------------------
+# Edges — for dashboard visualisation
+# ---------------------------------------------------------------------------
+
+[[edges]]
+from = "chief_of_staff"
+to   = "web_searcher"
+mode = "one_way"
+
+[[edges]]
+from = "chief_of_staff"
+to   = "summarizer"
+mode = "one_way"
+
+[[edges]]
+from = "web_searcher"
+to   = "fact_checker"
+mode = "peer_to_peer"
