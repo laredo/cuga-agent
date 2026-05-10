@@ -231,10 +231,14 @@ async def run_swarm(
     logger.info(f"[run_swarm] seeded {entry_id!r} with request ({len(request)} chars)")
 
     # Wait for the entry agent's immediate ack, then return
+    entry_timeout = float(timeout_map[entry_id])
+    ack_wait = entry_timeout + 30.0   # generous buffer beyond agent's own timeout
     try:
-        ack = await asyncio.wait_for(first_response_queue.get(), timeout=120.0)
+        ack = await asyncio.wait_for(first_response_queue.get(), timeout=ack_wait)
     except asyncio.TimeoutError:
-        logger.error(f"[run_swarm] entry agent did not respond within 120s for {task_id!r}")
+        logger.error(
+            f"[run_swarm] entry agent did not respond within {ack_wait:.0f}s for {task_id!r}"
+        )
         ack = "⏳ Request queued — I'll post updates here as the team works on it."
 
     return RunResult(answer=ack, task_id=task_id)

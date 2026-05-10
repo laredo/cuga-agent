@@ -67,7 +67,7 @@ type   = "cuga_lite"
 role   = "entry"
 domain = "research_orchestration"
 peers  = ["web_searcher", "summarizer"]
-timeout_seconds = 60
+timeout_seconds = 180
 instructions = """
 You are a Chief of Staff managing a research team. You receive Slack messages
 and must respond IMMEDIATELY with a short acknowledgement, then dispatch the

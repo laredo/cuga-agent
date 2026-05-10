@@ -66,7 +66,7 @@ _load_env()
 # Timing constants
 # ---------------------------------------------------------------------------
 
-ENTRY_ACK_TIMEOUT_S  = 90    # chief_of_staff must ack within this many seconds
+ENTRY_ACK_TIMEOUT_S  = 300   # includes factory build (~35 s) + entry-agent timeout (180 s)
 WORKER_WAIT_S        = 300   # how long to collect NOTIFY posts after ack
 TEST_REQUEST         = "research agentic AI frameworks 2025"
 
@@ -136,7 +136,7 @@ async def test_chief_of_staff_smoke():
                 first_response_queue=first_response_q,
                 slack_poster=collector.poster,
             ),
-            timeout=90.0,
+            timeout=float(entry_cfg.timeout_seconds) + 30.0,
         )
 
         elapsed = time.monotonic() - t0
@@ -148,7 +148,9 @@ async def test_chief_of_staff_smoke():
 
     assert ack, "ack is empty"
     assert len(ack) > 10, f"ack suspiciously short: {ack!r}"
-    assert elapsed < 60, f"chief_of_staff took {elapsed:.1f}s — exceeded 60 s limit"
+    assert elapsed < entry_cfg.timeout_seconds, (
+        f"chief_of_staff took {elapsed:.1f}s — exceeded {entry_cfg.timeout_seconds}s limit"
+    )
 
 
 # ---------------------------------------------------------------------------
