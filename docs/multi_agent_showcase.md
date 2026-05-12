@@ -277,11 +277,32 @@ source .env && cuga personal start
 ```
 
 ### Examples: Triggering the Research Swarm
-*This swarm writes to the Knowledge Base.*
-- `@bot research agentic AI frameworks` → Spawns the web searcher and fact checker pipeline.
-- `@bot summarize what we know about AI frameworks` → Reads the resulting vetted documents and produces a report.
+*This swarm **writes** to the Knowledge Base.*
+- `@bot research agentic AI frameworks` → Spawns the web searcher and fact checker pipeline. Posts one Slack update per vetted source.
+- `@bot summarize what we know about agentic AI frameworks` → Reads all `fact_checker::` KB entries and posts an executive summary with score-weighted key findings.
 
 ### Examples: Triggering the Sanity Check Swarm
-*This swarm reads from the Knowledge Base and checks external sources.*
-- `@bot sanity check this before I send it: We should migrate all our internal tools to React Native.` → Runs the internal auditor and external benchmarker concurrently.
-- `@bot what do we know about migrating to React Native` → Runs only the internal auditor against the KB.
+*This swarm **reads** from the Knowledge Base and checks external sources.*
+
+**Review Mode** — triggers both internal auditor + external benchmarker concurrently:
+- `@bot sanity check our proposal to build a custom multi-agent orchestration layer on top of PydanticAI instead of using LangGraph.`
+- `@bot sanity check: we should migrate our entire backend to a serverless architecture next quarter.`
+- `@bot reality check this before I send it — [paste proposal]`
+
+**Knowledge Mode** — triggers only the internal auditor (KB search):
+- `@bot what do we know about agentic frameworks?` → Searches only institutional memory; no web access.
+
+### The "golden path" demo arc
+
+```
+Day 1: @bot research agentic AI frameworks
+       └─ web_searcher + fact_checker build the KB (10–15 vetted sources)
+
+Day 2: @bot sanity check our proposal to build on PydanticAI instead of LangGraph.
+       ├─ internal_auditor searches the KB built in Day 1
+       │   └─ "Vetted research from 10-May identifies orchestration latency as key risk"
+       └─ external_benchmarker searches the web concurrently
+           └─ "Industry trend: most teams standardise on LangGraph for production swarms"
+```
+
+This is the moment neither agent could produce alone.

@@ -2,9 +2,11 @@
 
 Evaluation criteria: (1) hard or impossible with a single agent, (2) the P2P split clicks immediately when you describe it.
 
+**Status:** Option C is **deployed** as `skills/swarms/sanity-check/`. Options A, B, D remain brainstormed but not built.
+
 ---
 
-## Option A: Competitive Pre-Brief *(original idea)*
+## Option A: Competitive Pre-Brief *(brainstormed — not built)*
 
 **Trigger:** Maya needs a competitor pulse before a VP meeting.
 
@@ -24,7 +26,7 @@ Evaluation criteria: (1) hard or impossible with a single agent, (2) the P2P spl
 
 ---
 
-## Option B: On-Call Incident Triage
+## Option B: On-Call Incident Triage *(brainstormed — not built)*
 
 **Trigger:** Something broke. Maya needs to understand what happened fast.
 
@@ -44,7 +46,7 @@ Evaluation criteria: (1) hard or impossible with a single agent, (2) the P2P spl
 
 ---
 
-## Option C: Pre-Decision Sanity Check *(recommended)*
+## Option C: Pre-Decision Sanity Check ✅ **DEPLOYED** (`skills/swarms/sanity-check/`)
 
 **Trigger:** Maya is about to propose a major initiative — roadmap pivot, new feature direction, process change — and wants a reality check before she pitches it.
 
@@ -64,9 +66,14 @@ Evaluation criteria: (1) hard or impossible with a single agent, (2) the P2P spl
 
 **Requires:** KB from channel-digest/product-scout (already built), web search (already built). No new tools.
 
+**Demo prompts (working):**
+- `@bot sanity check our proposal to build a custom multi-agent orchestration layer on top of PydanticAI instead of using LangGraph.`
+- `@bot sanity check: we should migrate our entire backend to a serverless architecture next quarter.`
+- `@bot what do we know about agentic frameworks?` *(Knowledge Mode — internal_auditor only)*
+
 ---
 
-## Option D: Partner / Stakeholder Meeting Prep
+## Option D: Partner / Stakeholder Meeting Prep *(brainstormed — not built)*
 
 **Trigger:** Maya has a high-stakes external meeting.
 

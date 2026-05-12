@@ -46,7 +46,7 @@ A fully working research swarm example, separate from the personal layer.
 - `config.py` — `MultiAgentConfig` Pydantic model, `load_config()` reads TOML
 - `agent_bus.py` — `AgentBus` peer-permission enforcement (ACL)
 - `agent_factory.py` — `AgentFactory`, builds agents with MCP tools
-- `swarm_factory.py` — `SwarmAgentFactory`, async context manager for swarm pattern; each agent gets its own `EventQueue` inbox
+- `swarm_factory.py` — `SwarmAgentFactory`, async context manager for swarm pattern; each agent gets its own `EventQueue` inbox; dispatch tools use optional `config` + `**kwargs` to accept injected `thread_id`
 - `runner.py` — `ConfigurationRunner`, dispatches to the right pattern runner
 - `patterns/` — `pipeline.py`, `peer_to_peer.py`, `supervisor.py`, `swarm.py`
 
@@ -57,6 +57,8 @@ A fully working research swarm example, separate from the personal layer.
 - Inter-agent dispatch uses real LangChain tool calls: `dispatch_to_<peer_id>(content="...")`
 - Results posted to Slack via `NOTIFY_SLACK:` directives parsed from agent output
 - `SwarmBus` ACL: each agent only gets dispatch tools for agents in its own `peers` list
+- `task_id` is injected into the seed event and propagated through every peer dispatch so all agents post to the **same** Slack thread
+- `cuga_lite_graph.py` auto-wraps `dispatch_to_*` tools at runtime to inject `thread_id`, so worker agents inherit the correct Slack context without needing explicit plumbing in topology config
 
 **Working example:** `docs/examples/chief_of_staff_research/`
 
@@ -91,9 +93,16 @@ python run.py
 
 ---
 
+## What's been fixed / hardened since initial build
+
+- **Dispatch tool robustness** — `_dispatch_fn` in `swarm_factory.py` accepts optional `config` and `**kwargs` so the LangGraph executor can inject config without crashing.
+- **Slack thread propagation** — `task_id` is seeded into the initial `run_swarm` Event payload; `cuga_lite_graph.py` wraps `dispatch_to_*` tools to inject `thread_id` at runtime, ensuring every background worker posts to the correct Slack thread.
+- **Security validator** — `security.py` dunder regex tightened from `__` (matched any double-underscore, including filenames like `fact_checker__title`) to `\.__` + standalone dunder names only.
+- **Knowledge tool signature** — `client.py` knowledge tool inner functions accept `**kwargs` so `thread_id` injection does not crash.
+
 ## Open questions / what's NOT done yet
 
-- **Multi-agent showcase choice** — four scenario ideas in `.claude/ideas/multi-agent-scenarios.md` were brainstormed but may now be moot: Jim's chief-of-staff swarm already demonstrates the core P2P/swarm value prop. Decide whether to (a) run the existing example as-is, (b) adapt the topology for Maya's KB (connect to product-scout/channel-digest data), or (c) build a new scenario.
+- **Multi-agent showcase** — both swarms are live and working end-to-end. See `docs/multi_agent_showcase.md` for the demo arc and example prompts. Scenario C (`sanity-check`) is deployed.
 - **Scheduler persistence** — jobs are in-memory only, lost on restart. Deferred.
 - **Job management via Slack** — no list/delete/pause commands exposed to users yet.
 
@@ -108,8 +117,12 @@ python run.py
 | `src/cuga/personal/gateway/session.py` | Agent creation and tool wiring |
 | `src/cuga/personal/scheduler/engine.py` | Job execution, approval gate logic |
 | `docs/examples/chief_of_staff_research/topology.toml` | Full swarm topology with inline docs |
-| `docs/examples/chief_of_staff_research/run.py` | How to wire swarm + Slack + dashboard |
+| `skills/swarms/chief-of-staff-research/topology.toml` | Live personal-layer version of the research swarm |
+| `skills/swarms/sanity-check/topology.toml` | Live sanity check swarm (Option C from scenarios) |
+| `src/cuga/personal/core/swarm_router.py` | `SwarmRouter` — discovers swarms from `skills/swarms/`, matches triggers, fires `run_swarm` as `asyncio.Task` |
 | `src/cuga/backend/multi_agent/config.py` | TOML schema, `load_config()` |
 | `src/cuga/backend/multi_agent/swarm_factory.py` | `SwarmAgentFactory` — entry point for swarm |
 | `src/cuga/backend/multi_agent/runner.py` | `ConfigurationRunner` |
-| `.claude/ideas/multi-agent-scenarios.md` | Brainstormed options (may be superseded by Jim's example) |
+| `src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/common/security.py` | Sandbox security validator — dunder/import patterns |
+| `src/cuga/backend/knowledge/client.py` | Knowledge tool definitions — must accept `**kwargs` for `thread_id` injection |
+| `.claude/ideas/multi-agent-scenarios.md` | Brainstormed options — Option C is now deployed as `sanity-check` |
