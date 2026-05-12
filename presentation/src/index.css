@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: #0a0a0f;
+  color: #f5f5f0;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+/* Scale base type with viewport so the projector reads well. */
+html {
+  font-size: clamp(16px, 1.1vw + 0.5rem, 22px);
+}
+
+/* Input caret and selection */
+::selection {
+  background: rgba(125, 211, 252, 0.35);
+  color: #f5f5f0;
+}
+
+/* Prevent the canvas from ever scrolling during a slide. */
+.canvas-root {
+  overflow: hidden;
+}
+
+/* Shimmer for the fallback loading state. */
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.12) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.6s infinite linear;
+}
